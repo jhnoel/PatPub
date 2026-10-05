@@ -1,0 +1,18 @@
+[package]
+license = "Apache-2.0"
+name = "aps-backfill"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[[bin]]
+name = "aps-backfill"
+path = "src/main.rs"
+
+[dependencies]
+blake2 = "0.10"
+patpubrender = { path = "vendor/patpubrender" }
+serde_json = "1"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+zstd = "0.13"

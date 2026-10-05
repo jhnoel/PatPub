@@ -1,0 +1,28 @@
+version: 0.7
+cluster_id: patent-search
+node_id: ${QW_NODE_ID:-patent-searcher}
+enabled_services:
+  - searcher
+  - metastore
+listen_address: 0.0.0.0
+advertise_address: ${QW_ADVERTISE_ADDRESS:-127.0.0.1}
+data_dir: ${QW_DATA_DIR:-/tmp/qwdata}
+metastore_uri: ${QW_METASTORE_URI:-azure://quickwit/metastores/production-v1}
+default_index_root_uri: azure://quickwit/indexes
+rest:
+  listen_port: 7280
+storage:
+  azure:
+    account: ${QW_AZURE_STORAGE_ACCOUNT}
+    access_key: ${QW_AZURE_STORAGE_ACCESS_KEY}
+searcher:
+  aggregation_memory_limit: 32M
+  fast_field_cache_capacity: 32M
+  split_footer_cache_capacity: 32M
+  partial_request_cache_capacity: 0
+  predicate_cache_capacity: 0
+  max_num_concurrent_split_searches: 4
+  warmup_memory_budget: 64M
+  warmup_single_split_initial_allocation: 16M
+  request_timeout_secs: 60
+  leaf_request_timeout_secs: 60

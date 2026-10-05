@@ -1,0 +1,189 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "PatPub Search API",
+    "version": "1.0.0",
+    "description": "Search PatPub's published patent corpus. Results are hydrated from the active release and include publication metadata and text snippets. Query syntax supports the indexed fields title, abstract, claims, description, publication_number, publication_uid, patent_number, application_number, doc_kind, applicant, assignee, ipc, and us_class."
+  },
+  "paths": {
+    "/api/search": {
+      "post": {
+        "operationId": "searchPatents",
+        "summary": "Search published patents",
+        "description": "Run a full-text query against the active PatPub release. Use fielded query syntax for precise searches, for example `assignee:Acme AND claims:battery`. `max_hits` is capped at 100. `start_offset` can be used to page through results and is limited to 900.",
+        "security": [
+          {
+            "RouterBearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              },
+              "examples": {
+                "simple": {
+                  "summary": "Search for a technical phrase",
+                  "value": {
+                    "query": "wireless charging",
+                    "max_hits": 10
+                  }
+                },
+                "fielded": {
+                  "summary": "Search within an assignee and claims",
+                  "value": {
+                    "query": "assignee:Acme AND claims:battery",
+                    "max_hits": 20
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "The query uses unsupported fields or invalid search syntax.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Search results from the active release.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The router requires a bearer token and the request did not provide a valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the router's size limit."
+          },
+          "502": {
+            "description": "The active release or search upstream could not be used.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "RouterBearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Set this only when ROUTER_BEARER_TOKEN is configured on the PatPub router."
+      }
+    },
+    "schemas": {
+      "SearchRequest": {
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Quickwit full-text query. Searches title, abstract, claims, and description by default; indexed metadata fields can be queried explicitly.",
+            "example": "wireless charging"
+          },
+          "max_hits": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 10,
+            "description": "Maximum number of results to return."
+          },
+          "start_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 900,
+            "default": 0,
+            "description": "Zero-based result offset for pagination."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SearchResponse": {
+        "type": "object",
+        "required": [
+          "hits",
+          "num_hits",
+          "active_release_id"
+        ],
+        "properties": {
+          "hits": {
+            "type": "array",
+            "description": "Matching publications with stored metadata, source pointers, scores, and generated text snippets.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "snippets": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "active_release_id": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "num_hits": {
+            "type": "integer",
+            "description": "Total number of matching publications."
+          },
+          "elapsed_time_micros": {
+            "type": "integer"
+          },
+          "active_release_id": {
+            "type": "string"
+          },
+          "active_selector_sha256": {
+            "type": "string"
+          },
+          "active_manifest_sha256": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  }
+}

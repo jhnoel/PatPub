@@ -1,0 +1,162 @@
+# Strict production mapping. Full patent text remains in source packs; Quickwit
+# stores searchable fields and the source pointers needed for hydration.
+version: 0.8
+index_id: patents
+index_uri: azure://quickwit/indexes/patents
+doc_mapping:
+  mode: strict
+  store_source: false
+  timestamp_field: publication_date
+  tag_fields: [doc_kind]
+  field_mappings:
+    - name: publication_date
+      type: datetime
+      fast: true
+      indexed: true
+      stored: true
+      input_formats: [rfc3339, iso8601]
+      output_format: rfc3339
+      fast_precision: seconds
+    - name: filing_date
+      type: datetime
+      fast: true
+      indexed: true
+      stored: true
+      input_formats: [rfc3339, iso8601]
+      output_format: rfc3339
+      fast_precision: seconds
+    - name: title
+      type: text
+      tokenizer: default
+      record: position
+      fieldnorms: true
+      stored: false
+    - name: abstract
+      type: text
+      tokenizer: default
+      record: position
+      fieldnorms: true
+      stored: false
+    - name: claims
+      type: text
+      tokenizer: default
+      record: position
+      fieldnorms: true
+      stored: false
+    - name: description
+      type: text
+      tokenizer: default
+      record: position
+      fieldnorms: true
+      stored: false
+    - name: publication_number
+      type: text
+      tokenizer: raw
+      indexed: true
+      stored: true
+    - name: publication_uid
+      type: text
+      tokenizer: raw
+      indexed: true
+      stored: true
+    - name: publication_key
+      type: text
+      tokenizer: raw
+      indexed: true
+      stored: true
+    - name: patent_number
+      type: text
+      tokenizer: raw
+      indexed: true
+      stored: true
+    - name: patent_key
+      type: text
+      tokenizer: raw
+      indexed: true
+      stored: true
+    - name: application_number
+      type: text
+      tokenizer: raw
+      indexed: true
+      stored: true
+    - name: doc_kind
+      type: text
+      tokenizer: raw
+      indexed: true
+      stored: true
+      fast: true
+    - name: applicant
+      type: array<text>
+      tokenizer: default
+      indexed: true
+      stored: true
+    - name: assignee
+      type: array<text>
+      tokenizer: default
+      indexed: true
+      stored: true
+    - name: ipc
+      type: array<text>
+      tokenizer: raw
+      indexed: true
+      stored: true
+      fast: true
+    - name: us_class
+      type: array<text>
+      tokenizer: raw
+      indexed: true
+      stored: true
+    - name: shard
+      type: text
+      indexed: false
+      stored: true
+    - name: offset
+      type: u64
+      indexed: false
+      stored: true
+    - name: length
+      type: u64
+      indexed: false
+      stored: true
+    - name: source_generation
+      type: text
+      tokenizer: raw
+      indexed: true
+      stored: true
+      fast: true
+    - name: source_pack
+      type: text
+      indexed: false
+      stored: true
+    - name: source_pack_key
+      type: text
+      indexed: false
+      stored: true
+    - name: source_revision
+      type: text
+      indexed: false
+      stored: true
+    - name: uncompressed_length
+      type: u64
+      indexed: false
+      stored: true
+    - name: source_fingerprint
+      type: text
+      indexed: false
+      stored: true
+search_settings:
+  default_search_fields: [title, abstract, claims, description]
+indexing_settings:
+  # Allow small source appends to merge while keeping the index available to
+  # the single active writer. A long maturation period prevents immediate
+  # merging of every newly committed split.
+  commit_timeout_secs: 3600
+  split_num_docs_target: 100000
+  resources:
+    heap_size: 2G
+  merge_policy:
+    type: limit_merge
+    merge_factor: 10
+    max_merge_factor: 12
+    max_merge_ops: 4
+    maturation_period: 3650d

@@ -1,0 +1,38 @@
+subscription_id     = "00000000-0000-0000-0000-000000000000"
+location            = "eastus2"
+resource_group_name = "patpub-production"
+name_prefix         = "patpub"
+# Pick a globally unique suffix for storage and registry names.
+resource_suffix = "change123"
+
+# Preserve the existing deployment's corpus index and metastore namespace.
+# Use the defaults (patents / metastores/production-v1) for a fresh empty corpus.
+patent_index_id         = "patents-corpus"
+index_metastore_prefix = "metastores/corpus-v1"
+
+# Starts with storage, queue, registry, identities, logging, and a Key Vault.
+# Restore the USPTO key and publish immutable images before enabling compute.
+compute_enabled    = false
+ingestion_enabled  = false
+monthly_budget_usd = 20
+
+# Use immutable @sha256: image references built from this repository.
+fetch_image         = ""
+renderer_image      = ""
+metadata_image      = ""
+indexer_image       = ""
+orchestration_image = ""
+container_image     = ""
+
+# Terraform creates a PatPub-owned vault. Restore uspto-odp-api-key into it
+# outside Terraform before setting compute_enabled=true.
+
+external_ingress_enabled = false
+candidate_canary_query   = "{\"query\":\"patent\",\"max_hits\":1}"
+candidate_publication_uid = ""
+candidate_canary_url       = ""
+# Supply through TF_VAR_router_bearer_token or an encrypted tfvars source.
+# Never commit the secret value.
+# Supply patpub_mcp_key through TF_VAR_patpub_mcp_key or an encrypted tfvars source.
+# Open WebUI sends it as X-Functions-Key. Never commit the secret value.
+patpub_mcp_allowed_origins = ""
