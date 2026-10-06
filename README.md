@@ -1,81 +1,85 @@
 # PatPub
 
-PatPub ingests published USPTO patent documents and serves release-aware full-text
-search, canonical source hydration, snippets, and static publication metadata.
+PatPub ingests published USPTO patent grants and applications and serves
+full-text search through REST and MCP. It converts APS and XML archives to
+canonical Markdown, stores publication metadata in Parquet, and indexes text
+with Quickwit.
 
-This repository contains the pipeline, service, infrastructure and maintenance
-checks. The same worker bootstraps an empty store and maintains an existing
-corpus; no migration tools or prebuilt index are required.
+Search uses a published release that binds index state, metadata, and source
+generations. The API verifies each hit against that release, reads the matching
+document from an immutable source pack, and generates snippets. Serving uses
+stored publication data and has no live dependency on patent-record services.
 
-## Launch
+## Deploy
 
-With Python 3.11+, Azure CLI and Terraform installed, sign in with `az login`,
-copy the saved ingestion choices, supply your USPTO ODP key, and choose a unique
-deployment suffix:
+Requirements: Python 3.11+, Azure CLI, Terraform 1.6+, an Azure subscription
+with permission to create resources and assign roles, and a USPTO Open Data
+Portal API key. Choose a globally unique suffix of 5–10 lowercase letters or
+digits.
 
 ```sh
+az login
 cp ingestion.example.toml ingestion.toml
-# Edit ingestion.toml to choose document categories and year ranges.
+# Set document categories and year ranges in ingestion.toml.
 export USPTO_API_KEY='your USPTO ODP key'
 python scripts/launch_azure.py --suffix mypub123
 ```
 
-This provisions billable Azure resources, builds two images and starts backfill.
-Search becomes available after the first validated archive; the hourly worker
-continues from the oldest missing archive to the newest across enabled categories.
-Credentials and state are private under `.patpub/<suffix>/`. Document choices
-stay in ignored `ingestion.toml`. See [launch details](docs/deployment.md) for
-access keys, prerequisites, coverage and updates. Docker Compose hosting is not
-yet implemented.
+The launcher creates billable Azure resources, builds two container images in
+Azure Container Registry, and starts ingestion. Search becomes available after
+the first archive passes validation and its release is published. Private
+credentials and Terraform state are stored in `.patpub/<suffix>/`.
 
-## Components
+See [deployment](docs/deployment.md) for configuration, credentials, and updates.
+Azure is the supported deployment target; Docker Compose hosting is not
+implemented.
 
-- `ingestion-worker/`: the single production ingestion image.
-- `ingestion/`: acquisition, shared rendering, metadata, index/release checkpoints
-  and atomic publication.
-- `rust-worker/` and `aps-worker/`: source renderers with locked, local dependencies.
-- `fts/production/`: Quickwit indexing and authenticated REST/MCP serving.
-- `api-gateway/`: optional custom-domain gateway.
-- `terraform/`: one Azure root, organized by resource responsibility.
-- `tests/`, `fts/tests/` and Rust fixtures: maintenance and empty-state checks.
-- `scripts/`: fresh-stack launcher and operator smoke check.
+## Operating model
+
+- One hourly worker handles initial backfill, retries, and new publications.
+  Enabled catalogs are processed from the oldest missing archive to the newest;
+  new weeks wait behind the historical backlog.
+- The default configuration covers APS grants from 1976–2001, XML grants from
+  2002 onward, and application publications from 2001 onward. Pre-1976 ingestion
+  is not implemented.
+- Quickwit uses a file-backed metastore. The worker stops serving during index
+  writes and restarts it for validation. Search is unavailable during writes
+  and cold starts; serving scales from zero to one replica.
+
+## Repository
+
+| Path | Responsibility |
+| --- | --- |
+| `ingestion/` | Archive acquisition, rendering, metadata, checkpoints, and release publication |
+| `ingestion-worker/` | Ingestion container, including both Rust renderers and the Quickwit writer |
+| `rust-worker/`, `aps-worker/` | XML and APS renderers |
+| `fts/production/` | Quickwit indexing, source retrieval, snippets, and REST/MCP serving |
+| `terraform/` | Azure infrastructure |
+| `api-gateway/` | Optional Cloudflare gateway for a custom domain |
+| `scripts/` | Deployment launcher and serving checks |
+| `tests/`, `fts/tests/` | Pipeline, release, and search tests |
 
 ## Development
 
+Install uv and Rust, then run from the repository root:
+
 ```sh
-uv sync --extra dev --extra azure --extra parquet --extra router --extra mcp
+uv sync --locked --extra dev --extra azure --extra parquet --extra router --extra mcp
 uv run python -m pytest
 cargo test --locked --manifest-path rust-worker/Cargo.toml
 cargo test --locked --manifest-path aps-worker/Cargo.toml
 ```
 
-See [deployment](docs/deployment.md), [operations](docs/operations.md),
-[REST and MCP access](docs/mcp.md), and the [search implementation](fts/README.md).
+[Contributing](CONTRIBUTING.md) covers focused checks and container integration
+tests. The [documentation index](docs/README.md) links deployment, operations,
+client access, and search references.
 
 ## License and data
 
-The software is licensed under [Apache License 2.0](LICENSE); see the
-[third-party notices](THIRD-PARTY-NOTICES.md). USPTO archives and patent documents
-are retrieved separately and retain their applicable terms. Corpora, archives,
-source packs, generated indexes, Terraform state, and secrets are excluded from
-version control. Included fixtures are small synthetic documents.
+The software is licensed under [Apache License 2.0](LICENSE). Dependencies retain
+their own licenses; see [third-party notices](THIRD-PARTY-NOTICES.md). USPTO data
+is retrieved separately and remains subject to its applicable terms.
 
-## Empty-state integration check
-
-After building `patpub-ingestion`, this check runs the real renderer, Parquet
-projection and Quickwit against empty disk, then verifies publication, search,
-source-frame hydration and idempotent replay. It uses file-backed Blob transport
-and requires no Azure account:
-
-```sh
-docker run --rm --entrypoint /opt/ingestion-venv/bin/python \
-  -v "$PWD/tests:/tests:ro" -v "$PWD/rust-worker/fixtures:/fixtures:ro" \
-  patpub-ingestion /tests/bootstrap_integration.py
-```
-
-For the APS bootstrap check, use the same image and tests mount with `--aps`:
-
-```sh
-docker run --rm --entrypoint /opt/ingestion-venv/bin/python \
-  -v "$PWD/tests:/tests:ro" patpub-ingestion /tests/bootstrap_integration.py --aps
-```
+The repository includes small synthetic fixtures. Corpora, archives, source
+packs, generated indexes, Terraform state, and secrets are excluded from
+version control.

@@ -1,22 +1,46 @@
 # Full-text search
 
-`production/indexer/` updates the durable Quickwit index from verified temporary
-projections of retained raw archives. `production/serving/` contains the combined
-Quickwit and REST/MCP application, source hydration, and snippets.
+PatPub indexes patent text with Quickwit and retrieves canonical Markdown from
+immutable source packs. The search API returns stored publication metadata,
+generated snippets, and the active release ID.
 
-The release pipeline selects the active index shards and source generations.
-Search results are verified against that release before source frames are read.
-Metadata and indexing workers use the XML renderer in `rust-worker/` and the APS
-renderer in `aps-worker/`. Both are built from this repository.
+## Indexing
 
-See the [router contract](production/docs/source-router.md),
-[Quickwit serving](docs/reference/quickwit-serving.md),
-[source format](docs/reference/zstd-source-format.md), and
-[operations guide](../docs/operations.md).
+The ingestion image runs [the indexer](production/indexer/indexer.py) as part of
+the archive pipeline. The XML and APS renderers produce one temporary projection
+per archive attempt. Metadata generation and indexing consume that projection;
+the raw archive and source packs remain in Blob Storage.
 
-Build the service and indexer from the repository root:
+Quickwit indexes the text and stores publication metadata and source pointers.
+The index and metastore are durable; local caches are disposable. The
+[serving reference](docs/reference/quickwit-serving.md) describes the mapping
+and metastore concurrency requirements.
+
+## Serving
+
+The serving container runs Quickwit on loopback and exposes an authenticated
+REST/MCP API. For each search, the router resolves the active release, restricts
+the query to its selected indexes and source generations, verifies the returned
+source pointers, and reads one compressed document frame per hit.
+
+The release binds index state, metadata snapshots, source generations, and pack
+identities. Source checks prevent a hit from being hydrated from an unrelated
+generation. Publication validation and request-time checks have separate roles;
+see the [router contract](production/docs/source-router.md) and
+[source format](docs/reference/zstd-source-format.md).
+
+The worker stops serving during index writes because the file-backed metastore
+requires exclusive access. Deployment runs zero to one serving replica.
+See [operations](../docs/operations.md) for failure recovery and rollback.
+
+## Build and test
+
+The two production images are the ingestion image and the combined serving
+image. Build commands are in [deployment](../docs/deployment.md#build-images-locally).
+
+Run search tests from the repository root after installing development
+dependencies:
 
 ```sh
-docker build -f fts/production/serving/combined-app/Dockerfile .
-docker build -f fts/production/indexer/Dockerfile .
+uv run python -m pytest fts/tests
 ```

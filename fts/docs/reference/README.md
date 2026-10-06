@@ -1,5 +1,7 @@
 # Search reference
 
-- [Quickwit serving](quickwit-serving.md): index fields and reader concurrency.
-- [Source format](zstd-source-format.md): immutable packs and hydration checks.
-- [Router](../../production/docs/source-router.md): release-aware API behavior.
+| Reference | Contents |
+| --- | --- |
+| [Quickwit serving](quickwit-serving.md) | Index fields, storage, process layout, and concurrency |
+| [Source format](zstd-source-format.md) | Pack layout, source pointers, and integrity checks |
+| [Router contract](../../production/docs/source-router.md) | Release selection, query restrictions, and response limits |

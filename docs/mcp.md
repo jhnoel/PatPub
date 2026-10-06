@@ -1,53 +1,94 @@
-# PatPub MCP
+# REST and MCP
 
-PatPub exposes a stateless Streamable HTTP MCP server at
-`https://api.jamienoel.com/patpub/mcp`. The Cloudflare gateway forwards this
-route to the PatPub search service. It requires a shared MCP key in the
-`X-Functions-Key` header; this is separate from the REST API's bearer token.
+REST and MCP search the same active release. Results include publication
+metadata, snippets generated from canonical source text, and
+`active_release_id`. MCP omits internal source-pack pointers.
 
-## Tool
+## Endpoints and authentication
 
-- `search_patents`: searches the active published-patent release. Supports the
-  same Quickwit query syntax as the REST endpoint, with `max_hits` up to 100
-  and `start_offset` up to 900. Results include publication metadata and
-  snippets, while omitting internal source-pack pointers.
+Paths differ between the direct serving app and the checked-in custom-domain
+gateway.
 
-The `inventor` field is not indexed. `applicant:Vaswani` searches applicant
-names, which include inventor names in some records; it does not provide
-complete inventor coverage. Invalid field names and syntax return the search
-engine's query explanation instead of a generic upstream failure.
+| Interface | Direct serving path | Gateway URL | Required header |
+| --- | --- | --- | --- |
+| REST search | `/api/search` | `https://api.jamienoel.com/patpub/api/search` | `Authorization: Bearer <REST token>` |
+| OpenAPI | `/openapi.json` | `https://api.jamienoel.com/patpub/openapi.json` | `Authorization: Bearer <REST token>` |
+| MCP | `/patpub/mcp` | `https://api.jamienoel.com/patpub/mcp` | `X-Functions-Key: <MCP key>` |
 
-Broad phrase searches scan title, abstract, claims, and description by default.
-Use `claims:"large language model"` or
-`assignee:Google AND (title:transformer OR abstract:attention)` when those
-restrictions fit the research question. The router waits up to 65 seconds by
-default, exceeding Quickwit's 60-second search budget. Override this with
-`UPSTREAM_TIMEOUT_SECONDS` only in coordination with the search engine budget.
+Terraform's `router_bearer_token` variable supplies the `ROUTER_BEARER_TOKEN`
+environment variable through a Container App secret. The separate MCP key
+uses `patpub_mcp_key` and `PATPUB_MCP_KEY` in the same way.
 
-The MCP server uses JSON Streamable HTTP responses and stateless requests.
-The spec is available at `https://api.jamienoel.com/patpub/openapi.json`
-with the REST bearer token. Its server base URL is
-`https://api.jamienoel.com/patpub`, with search at `/api/search`.
+The gateway forwards credentials to the serving app and sets the OpenAPI
+server URL to `https://api.jamienoel.com/patpub`.
 
-## Open WebUI
+## REST request
 
-Create an MCP server connection with:
+Set `PATPUB_URL` to the direct serving URL or the gateway base URL, including
+`/patpub` for the gateway. Set `ROUTER_BEARER_TOKEN` in the environment.
+
+```sh
+curl --fail-with-body "$PATPUB_URL/api/search" \
+  -H "Authorization: Bearer $ROUTER_BEARER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"query":"wireless charging","max_hits":10,"start_offset":0}'
+```
+
+The [OpenAPI definition](../fts/production/serving/api/openapi.json) describes
+the request and response schemas. `max_hits` defaults to 10 and is capped at
+100. `start_offset` defaults to 0 and accepts values from 0 through 900.
+
+## Query fields
+
+Queries use Quickwit syntax. Unqualified queries search `title`, `abstract`,
+`claims`, and `description`. Narrowing the fields can reduce search latency:
+
+```text
+claims:"large language model"
+assignee:Google AND (title:transformer OR abstract:attention)
+```
+
+Indexed publication fields include `publication_number`, `publication_uid`,
+`patent_number`, `application_number`, `doc_kind`, `publication_date`, and
+`filing_date`. Names and classifications use `applicant`, `assignee`, `ipc`, and
+`us_class`. See the [index mapping](../fts/production/indexer/index.yaml) for
+the complete field definitions.
+
+`inventor` is not indexed. `applicant:Vaswani` searches applicant names, which
+contain inventor names in some records; it does not provide complete inventor
+coverage. Invalid fields and query syntax return a query explanation.
+
+Quickwit's configured search budget is 60 seconds. The router's upstream
+timeout defaults to 65 seconds and can be changed with
+`UPSTREAM_TIMEOUT_SECONDS`. Keep it above the engine budget and allow
+additional time for source retrieval and cold starts in client timeouts.
+
+## MCP clients
+
+The `search_patents` tool accepts `query`, `max_hits`, and `start_offset` with
+the same query behavior and limits as REST. The server uses stateless
+Streamable HTTP with JSON responses.
+
+For Open WebUI or another MCP client, configure:
 
 ```text
 URL: https://api.jamienoel.com/patpub/mcp
 Header: X-Functions-Key: <PatPub MCP key>
 ```
 
-The key is set as the Terraform `patpub_mcp_key` sensitive variable and as the
-Container App secret `PATPUB_MCP_KEY`. Supply browser Origins in the optional
-Terraform `patpub_mcp_allowed_origins` variable if the MCP client sends an
-Origin header. Requests without Origin are allowed.
+For another deployment, use its MCP endpoint from the table above. The MCP
+transport validates the request Host against an allowlist. The defaults include
+the checked-in gateway and serving host, plus local development hosts. Add
+other hostnames through `PATPUB_MCP_ALLOWED_HOSTS` in the serving app's
+environment; the Terraform root does not currently configure this setting.
 
-Cloudflare has an enabled custom Skip rule (`patpub_skip_bic`) matching only
-`api.jamienoel.com` paths `/patpub/mcp`, `/patpub/openapi.json`, and
-`/patpub/api/search`.
-It skips only Browser Integrity Check (`bic`) so machine clients can connect.
-Other security products, the deployed Worker, and origin key checks remain
-active.
+Clients that send an `Origin` header also need that origin in the optional,
+comma-separated Terraform variable `patpub_mcp_allowed_origins`. Requests
+without an Origin header are allowed.
 
-For an operator check after deployment, see [operations](operations.md).
+If Cloudflare Browser Integrity Check blocks machine clients, scope a Skip
+rule to `/patpub/mcp`, `/patpub/openapi.json`, and `/patpub/api/search` on the
+gateway host and skip only Browser Integrity Check (`bic`). The rule name for
+the documented `api.jamienoel.com` configuration is `patpub_skip_bic`. Origin
+authentication and other security controls still apply. Use the
+[serving check](operations.md#verify-serving) to verify access after deployment.

@@ -1,8 +1,10 @@
-# PatPub maintenance documentation
+# Documentation
 
-- [Deployment](deployment.md): infrastructure, image builds, and updates.
-- [Operations](operations.md): routine ingestion, validation, recovery, and
-  durable corpus compatibility records.
-- [REST and MCP](mcp.md): authentication and client connections.
-- [Search](../fts/README.md): indexing and release-aware serving.
-- [Infrastructure](../terraform/README.md): Terraform organization and state.
+| Guide | Contents |
+| --- | --- |
+| [Deployment](deployment.md) | Azure setup, corpus selection, image builds, and updates |
+| [Operations](operations.md) | Ingestion behavior, checkpoints, validation, and recovery |
+| [REST and MCP](mcp.md) | Endpoints, authentication, queries, and client configuration |
+| [Search](../fts/README.md) | Indexing and source retrieval architecture |
+| [Infrastructure](../terraform/README.md) | Terraform layout, inputs, and state |
+| [Contributing](../CONTRIBUTING.md) | Development checks and integration tests |
