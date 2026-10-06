@@ -1,4 +1,4 @@
-"""Build one immutable Quickwit index from a pipeline event.
+"""Append one archive to the durable Quickwit index.
 
 The raw archive and event live in the corpus account. Quickwit's metastore and
 splits live in a separate account. A result is published only after all split
@@ -17,22 +17,12 @@ import time
 from typing import Callable
 from urllib import error, request
 
-from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
-from azure.identity import DefaultAzureCredential
-from azure.storage.blob import BlobServiceClient
-from ingestion.render_local import render_from_raw
+from azure.core.exceptions import ResourceExistsError
 from ingestion.search_query import generation_filter
 
 
 ENDPOINT = "http://127.0.0.1:7390"
 INTEGRITY_CACHE = None
-
-
-def required(name: str) -> str:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        raise RuntimeError(f"{name} is required")
-    return value
 
 
 def canonical(value: object) -> bytes:
@@ -208,33 +198,8 @@ def wait_for_quickwit(process: subprocess.Popen[bytes]) -> None:
 
 
 def artifact(blob, logical_key: str) -> dict[str, object]:
-    before = blob.get_blob_properties() if INTEGRITY_CACHE is not None else None
-    if INTEGRITY_CACHE is not None:
-        cache_key = hashlib.sha256(logical_key.encode()).hexdigest()
-        try:
-            evidence = json.loads(INTEGRITY_CACHE.get_blob_client(
-                f"migration/v1/integrity/{cache_key}.json").download_blob().readall())
-        except ResourceNotFoundError:
-            evidence = None
-        if (evidence and evidence.get("etag") == before.etag
-                and evidence.get("bytes") == before.size
-                and f"{evidence.get('container')}/{evidence.get('key')}" == logical_key
-                and re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("sha256", "")))):
-            after = blob.get_blob_properties()
-            if after.etag != before.etag:
-                raise RuntimeError("Artifact changed during checkpoint verification")
-            print(f"artifact_hash_reused={logical_key} bytes={before.size}", flush=True)
-            return {"key": logical_key, "sha256": evidence["sha256"], "bytes": before.size}
-    digest = hashlib.sha256()
-    size = 0
-    for block in blob.download_blob(max_concurrency=4).chunks():
-        size += len(block)
-        digest.update(block)
-    if before is not None:
-        after = blob.get_blob_properties()
-        if before.etag != after.etag or size != before.size:
-            raise RuntimeError("Artifact changed during hash verification")
-    return {"key": logical_key, "sha256": digest.hexdigest(), "bytes": size}
+    from ingestion.integrity import artifact_ref
+    return artifact_ref(blob, logical_key, INTEGRITY_CACHE)
 
 
 def inventory(quickwit, prefix: str, index_id: str) -> tuple[dict, list[dict], int]:
@@ -294,27 +259,12 @@ def snapshot_metastore(quickwit, releases, metastore_ref: dict) -> dict:
     return {"key": snapshot_key, "sha256": digest, "bytes": len(live)}
 
 
-def main() -> int:
-    account = required("AZURE_STORAGE_ACCOUNT")
-    qw_account = required("QW_AZURE_STORAGE_ACCOUNT")
-    event_key = required("PIPELINE_EVENT_KEY")
-    result_key = required("PIPELINE_RESULT_KEY")
-    prefix = os.environ.get("INDEX_METASTORE_PREFIX", "metastores/production-v1").strip("/")
-    credential = DefaultAzureCredential()
-    corpus = BlobServiceClient(f"https://{account}.blob.core.windows.net", credential=credential)
-    quickwit = BlobServiceClient(f"https://{qw_account}.blob.core.windows.net", credential=credential)
+def index_projection(corpus, quickwit, payload, projection_path, work, *, integrity_cache=None):
+    """Synchronously append the shared projection and stop the writer before returning."""
     releases = corpus.get_container_client("releases")
     global INTEGRITY_CACHE
-    if os.environ.get("REUSE_VERIFIED_ARTIFACT_HASHES") == "true":
-        INTEGRITY_CACHE = releases
-    event = json.loads(releases.get_blob_client(event_key).download_blob().readall())
-    payload = event.get("payload")
-    if event.get("stage") != "index" or not isinstance(payload, dict):
-        raise RuntimeError("index worker requires an index event")
-    fingerprint = hashlib.sha256(canonical({"schema_version": 1, "stage": "index", "payload": payload})).hexdigest()
-    event_id = f"index-{fingerprint[:32]}"
-    if event.get("event_id") != event_id or event.get("event_fingerprint") != fingerprint:
-        raise RuntimeError("event identity mismatch")
+    INTEGRITY_CACHE = integrity_cache if integrity_cache is not None else releases
+    prefix = os.environ.get("INDEX_METASTORE_PREFIX", "metastores/production-v1").strip("/")
     index_id = str(payload.get("index_id") or "")
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,100}", index_id):
         raise RuntimeError("invalid index ID")
@@ -332,21 +282,18 @@ def main() -> int:
     if generation in purge_ids or set(purge_ids) & set(active_generations):
         raise RuntimeError("refusing to purge a generation that this release still serves")
     expected_total = int(payload.get("expected_total_count", -1))
-    work = Path("/work")
-    work.mkdir(parents=True, exist_ok=True)
-    projection_path = render_from_raw(corpus, payload, work)
     publication_count = sum(1 for line in projection_path.open("rb") if line.strip())
     if publication_count < 1:
         raise RuntimeError("projection is empty")
 
-    config = Path("/quickwit/index.yaml").read_text()
+    config = Path(os.environ.get("INDEX_CONFIG_PATH", "/quickwit/index.yaml")).read_text()
     config = re.sub(r"^index_id: .*", f"index_id: {index_id}", config, flags=re.MULTILINE)
     config = re.sub(
-        r"^index_uri: .*", f"index_uri: azure://quickwit/indexes/{index_id}",
+        r"^index_uri: .*", f"index_uri: {os.environ.get('QW_INDEX_ROOT_URI', 'azure://quickwit/indexes').rstrip('/')}/{index_id}",
         config, flags=re.MULTILINE,
     )
     (work / "index.yaml").write_text(config)
-    process = subprocess.Popen(["quickwit", "run", "--config", "/quickwit/node.yaml"])
+    process = subprocess.Popen(["quickwit", "run", "--config", os.environ.get("QUICKWIT_CONFIG_PATH", "/quickwit/node.yaml")])
     try:
         wait_for_quickwit(process)
         try:
@@ -410,22 +357,11 @@ def main() -> int:
                          "splits": splits, "document_count": logical_docs},
             "publication_count": publication_count,
         }
-        envelope = {"event_id": event_id, "event_fingerprint": fingerprint, "result": result}
-        result_blob = releases.get_blob_client(result_key)
-        try:
-            result_blob.upload_blob(canonical(envelope), overwrite=False, if_none_match="*")
-        except ResourceExistsError:
-            if json.loads(result_blob.download_blob().readall()) != envelope:
-                raise RuntimeError("immutable index result conflict")
-        print(f"index_status=published index_id={index_id} documents={logical_docs}", flush=True)
-        return 0
+        return result
     finally:
         process.terminate()
         try:
             process.wait(timeout=20)
         except subprocess.TimeoutExpired:
             process.kill()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+            process.wait()

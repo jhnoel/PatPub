@@ -563,49 +563,48 @@ class AzureBlobReleaseStore:
             raise ReleaseError("empty Blob key")
         return self._containers[container].get_blob_client(blob_key)
 
+    def protect_artifacts(self, artifacts, *, manifest_key=None):
+        """Check old Blob versions in batch without downloading corpus bytes.
+
+        The single writer lease owns ingestion and Quickwit split objects are
+        immutable. Listings bind historical receipts to current sizes/ETags;
+        new and changed artifacts still take the normal hashing path.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        from types import SimpleNamespace
+        cache = self._containers[self._default_container]
+        protected = {item['key']: item for item in artifacts}
+        cache._patpub_protected_artifacts = protected
+        cache._patpub_published_before = (
+            self._blob(manifest_key).get_blob_properties().last_modified if manifest_key else None)
+        def namespace(key):
+            prefix = key.split('/', 1)[0]
+            return prefix if prefix in self._containers else self._default_container
+        names = {namespace(key) for key in protected}
+        def inventory(name):
+            return name, {item.name: SimpleNamespace(size=item.size, etag=item.etag,
+                          creation_time=getattr(item, 'creation_time', None),
+                          last_modified=getattr(item, 'last_modified', None))
+                          for item in self._containers[name].list_blobs()}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            listed = dict(pool.map(inventory, sorted(names)))
+        cache._patpub_properties = {}
+        for key in protected:
+            name = namespace(key)
+            physical = key if name == self._default_container else key.split('/', 1)[1]
+            properties = listed[name].get(physical)
+            if properties is not None:
+                cache._patpub_properties[key] = properties
+
+
     def verified_artifact(self, artifact: Mapping[str, Any]) -> bool:
         """Reuse a completed full-graph hash only for the identical Blob version."""
-        cache_key = os.environ.get("ARTIFACT_VERSION_CACHE_KEY", "")
-        if not cache_key:
-            return False
-        if not hasattr(self, "_version_cache"):
-            cache = json.loads(self.read(cache_key))
-            graph = json.loads(self.read("migration/v1/full-release-graph-validation.json"))
-            candidate = json.loads(self.read("migration/v1/full-release-candidate.json"))
-            if (cache.get("release_id") != graph.get("release_id") or
-                cache.get("manifest_sha256") != candidate["manifest"]["sha256"] or
-                graph.get("status") != "graph-validated-pending-search-canary"):
-                raise ReleaseError("artifact version cache has no matching completed graph proof")
-            from datetime import datetime
-            captured = datetime.fromisoformat(cache["capture_finished_utc"])
-            completed = self._blob("migration/v1/full-release-graph-validation.json").get_blob_properties().last_modified
-            if captured >= completed:
-                raise ReleaseError("artifact versions were captured after graph validation")
-            self._version_cache = cache["versions"]
-        cached = self._version_cache.get(artifact["key"])
-        if not cached or any(cached.get(k) != artifact[k] for k in ("key", "sha256", "bytes")):
-            return False
-        if os.environ.get("BATCH_ETAG_VALIDATION", "false").lower() == "true":
-            if not hasattr(self, "_current_versions"):
-                # Azure listings return sizes and ETags without downloading payloads.
-                # A sole guarded writer owns this release; unchanged versions reuse
-                # the completed full graph hashes, while new versions are hashed.
-                from concurrent.futures import ThreadPoolExecutor
-                containers = {key.split("/", 1)[0] if key.split("/", 1)[0] in self._containers
-                              else self._default_container for key in self._version_cache}
-                def inventory(name):
-                    return name, {item.name: (item.size, str(item.etag))
-                                  for item in self._containers[name].list_blobs()}
-                with ThreadPoolExecutor(max_workers=4) as pool:
-                    self._current_versions = dict(pool.map(inventory, sorted(containers)))
-            parts = artifact["key"].split("/", 1)
-            container = parts[0] if len(parts) == 2 and parts[0] in self._containers else self._default_container
-            key = artifact["key"] if container == self._default_container else parts[1]
-            current = self._current_versions.get(container, {}).get(key)
-            return (current is not None and current[0] == artifact["bytes"]
-                    and current[1].strip('"') == str(cached.get("etag")).strip('"'))
-        current = self._blob(artifact["key"]).get_blob_properties()
-        return current.size == artifact["bytes"] and str(current.etag) == cached.get("etag")
+        from .integrity import artifact_ref
+        actual = artifact_ref(self._blob(artifact["key"]), artifact["key"],
+                              self._containers[self._default_container])
+        if any(actual[k] != artifact[k] for k in ("key", "sha256", "bytes")):
+            raise ReleaseError("artifact integrity mismatch")
+        return True
 
     def exists(self, key: str) -> bool:  # pragma: no cover - deployment-only path
         from azure.core.exceptions import ResourceNotFoundError

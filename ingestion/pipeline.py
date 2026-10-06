@@ -1,4 +1,4 @@
-"""Queue-driven Azure pipeline controller for immutable raw archive events."""
+"""Sequential ingestion with durable checkpoints and atomic release publication."""
 from __future__ import annotations
 
 import hashlib
@@ -9,8 +9,9 @@ from urllib import request as urlrequest
 from urllib import error as urlerror
 
 from .orchestration import DownstreamOrchestrator, PipelineEvent, OrchestrationError
-from .release import AzureBlobReleaseStore, ReleaseError, _iter_artifacts
+from .release import AzureBlobReleaseStore, _iter_artifacts
 from .search_query import generation_filter
+from .models import canonical_json
 from fts.production.serving.api.source_router import Router
 
 
@@ -98,28 +99,6 @@ def candidate_canary(manifest: dict) -> bool:
     return revision.startswith('sha256:') and hashlib.sha256(markdown).hexdigest() == revision[7:] and markdown.startswith(f'<!-- publication_uid: {uid} -->\n'.encode())
 
 
-def start_job(resource_id: str, event_key: str, result_key: str) -> None:
-    from azure.identity import DefaultAzureCredential
-    credential = DefaultAzureCredential()
-    token = credential.get_token('https://management.azure.com/.default').token
-    api = '2024-03-01'
-    base = f'https://management.azure.com{resource_id}'
-    headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-    with urlrequest.urlopen(urlrequest.Request(f'{base}?api-version={api}', headers=headers), timeout=30) as response:
-        job = json.loads(response.read())
-    containers = job['properties']['template']['containers']
-    if len(containers) != 1:
-        raise RuntimeError('job must have exactly one container')
-    container = dict(containers[0])
-    env = [item for item in container.get('env', []) if item.get('name') not in {'PIPELINE_EVENT_KEY', 'PIPELINE_RESULT_KEY'}]
-    env.extend([{'name': 'PIPELINE_EVENT_KEY', 'value': event_key},
-                {'name': 'PIPELINE_RESULT_KEY', 'value': result_key}])
-    container['env'] = env
-    body = json.dumps({'containers': [container]}).encode()
-    with urlrequest.urlopen(urlrequest.Request(f'{base}/start?api-version={api}', data=body, headers=headers, method='POST'), timeout=45) as response:
-        response.read()
-
-
 def _serving_arm(action: str | None = None) -> str:
     """Read or change the serving app state through Azure Resource Manager."""
     from azure.identity import DefaultAzureCredential
@@ -150,21 +129,6 @@ def _serving_arm(action: str | None = None) -> str:
             time.sleep(5)
 
 
-def _wait_indexer_idle() -> None:
-    from azure.identity import DefaultAzureCredential
-    resource = required('INDEX_JOB_RESOURCE_ID')
-    token = DefaultAzureCredential().get_token('https://management.azure.com/.default').token
-    req = urlrequest.Request('https://management.azure.com'+resource+'/executions?api-version=2024-03-01', headers={'Authorization':'Bearer '+token})
-    deadline = time.monotonic() + int(os.environ.get('WORKER_RESULT_TIMEOUT_SECONDS', '14400'))
-    while time.monotonic() < deadline:
-        with urlrequest.urlopen(req, timeout=45) as response:
-            executions = json.load(response)['value']
-        if not any(x.get('properties', {}).get('status') == 'Running' for x in executions):
-            return
-        time.sleep(5)
-    raise RuntimeError('Index writer has not exited; serving stays stopped')
-
-
 def _wait_serving_status(expected: str) -> None:
     deadline = time.monotonic() + int(os.environ.get('SERVING_TRANSITION_TIMEOUT_SECONDS', '600'))
     while time.monotonic() < deadline:
@@ -188,12 +152,11 @@ def _wait_serving_health() -> None:
     raise RuntimeError('serving Quickwit did not become healthy after restart')
 
 
-def index_with_serving_paused(store, payload: dict) -> dict:
+def index_with_serving_paused(store, payload: dict, compute) -> dict:
     """Give the file-backed Quickwit metastore to one process at a time."""
     index_event = PipelineEvent('index', payload)
     if store.exists(f'events/results/{index_event.event_id}.json'):
-        _wait_indexer_idle()
-        result = run_worker(store, 'index', payload)
+        result = checkpoint(store, 'index', payload, compute)
         if _serving_arm() != 'Running':
             _serving_arm('start')
             _wait_serving_status('Running')
@@ -207,33 +170,27 @@ def index_with_serving_paused(store, payload: dict) -> dict:
         _wait_serving_status('Stopped')
     # Keep serving stopped after an indexing failure. Restarting could expose
     # a partially appended generation under the previous release selector.
-    result = run_worker(store, 'index', payload)
-    _wait_indexer_idle()
+    result = checkpoint(store, 'index', payload, compute)
     _serving_arm('start')
     _wait_serving_status('Running')
     _wait_serving_health()
     return result
 
 
-def run_worker(store, stage: str, payload: dict) -> dict:
+def checkpoint(store, stage: str, payload: dict, compute) -> dict:
+    """Run a stage in this process, retaining its immutable completion receipt."""
     event = PipelineEvent(stage, payload)
-    event_key = f'events/{event.event_id}.json'
     result_key = f'events/results/{event.event_id}.json'
-    if not store.write_json_if_absent(event_key, event.as_dict()):
-        if json.loads(store.read(event_key)) != event.as_dict():
-            raise RuntimeError('immutable event conflict')
-    if not store.exists(result_key):
-        start_job(required({'render': 'RENDER_JOB_RESOURCE_ID', 'metadata': 'METADATA_JOB_RESOURCE_ID', 'index': 'INDEX_JOB_RESOURCE_ID'}[stage]), event_key, result_key)
-    deadline = time.monotonic() + int(os.environ.get('WORKER_RESULT_TIMEOUT_SECONDS', '14400'))
-    while time.monotonic() < deadline:
-        if store.exists(result_key):
-            envelope = json.loads(store.read(result_key))
-            if envelope.get('event_id') != event.event_id or envelope.get('event_fingerprint') != event.fingerprint:
-                raise RuntimeError('worker result identity mismatch')
-            print('worker_result_ready stage=' + stage + ' event=' + event.event_id, flush=True)
-            return envelope['result']
-        time.sleep(10)
-    raise RuntimeError(f'{stage} worker did not publish its result in time')
+    if store.exists(result_key):
+        envelope = json.loads(store.read(result_key))
+        if envelope.get('event_id') != event.event_id or envelope.get('event_fingerprint') != event.fingerprint:
+            raise RuntimeError('worker result identity mismatch')
+        return envelope['result']
+    result = compute()
+    envelope = {'event_id': event.event_id, 'event_fingerprint': event.fingerprint, 'result': result}
+    if not store.write_json_if_absent(result_key, envelope) and json.loads(store.read(result_key)) != envelope:
+        raise RuntimeError('immutable stage result conflict')
+    return result
 
 
 def verify_correction_coverage(store, old_snapshot: dict, new_snapshot: dict) -> None:
@@ -254,55 +211,67 @@ def verify_correction_coverage(store, old_snapshot: dict, new_snapshot: dict) ->
         return ids
     missing = inventory(old_snapshot) - inventory(new_snapshot)
     if missing:
-        proof = json.loads(store.read('migration/v1/correction-withdrawal-exact.json'))
-        withdrawn = {p['publication_uid'] for p in proof['publications'] if p['candidate_found']}
-        unexplained = missing - withdrawn
-        if unexplained:
-            raise RuntimeError('Correction requires explicit preservation before indexing: ' + ', '.join(sorted(unexplained)))
+        raise RuntimeError('Correction requires explicit preservation before indexing: ' + ', '.join(sorted(missing)))
 
 
-def run_pipeline(store, event: PipelineEvent) -> dict:
+def run_pipeline(store, event: PipelineEvent, work, *, service, indexer, canary=candidate_canary) -> dict:
     """Append one archive to the durable index and atomically publish it."""
     if event.stage != 'render':
-        raise RuntimeError('queue entry must be a render event')
+        raise RuntimeError('archive entry must be a render event')
     prior = None
     predecessor_sha = None
     if store.exists('releases/current.json'):
         selector_bytes = store.read('releases/current.json')
         predecessor_sha = hashlib.sha256(selector_bytes).hexdigest()
         active = json.loads(selector_bytes)
-        prior = json.loads(store.read(active['manifest_key']))
+        prior_bytes = store.read(active['manifest_key'])
+        prior = json.loads(prior_bytes)
+        if hashlib.sha256(canonical_json(prior)).hexdigest() != active.get('manifest_sha256'):
+            raise OrchestrationError('active release manifest digest mismatch')
         if event.payload['source_generation'] in prior['source_generations']:
             return {'release_id': prior['release_id'], 'selector': active}
         if prior['fulltext'].get('index_id') != os.environ.get('PATENT_INDEX_ID', 'patents'):
             raise OrchestrationError('configured index does not match the active release')
+        protect = getattr(store, 'protect_artifacts', None)
+        if protect:
+            protect((artifact for _, artifact in _iter_artifacts(prior, 'release')),
+                    manifest_key=active['manifest_key'])
         prefetch = getattr(store, 'prefetch_json', None)
         if prefetch:
             prefetch(a['key'] for _, a in _iter_artifacts(prior, 'release'))
         print('historical_controls_prefetched', flush=True)
 
     raw = event.payload['raw']
-    render = run_worker(store, 'render', dict(event.payload))
+    from .archive import prepare_archive
+    from .projection import project_metadata
+    projection_path, render = prepare_archive(service, event.payload, work)
+    recorded = checkpoint(store, 'render', dict(event.payload), lambda: render)
+    # Retries must reproduce the identical archive before reusing stage receipts.
+    comparable = {k: recorded[k] for k in render}
+    comparable['projection'] = {k: recorded['projection'][k] for k in ('sha256', 'bytes')}
+    if comparable != render:
+        raise RuntimeError('rendered archive differs from its checkpoint')
     generation = DownstreamOrchestrator(store).run_generation(PipelineEvent('generation', {
         'raw': raw, 'generation_id': event.payload['source_generation'],
         'source_identity': event.payload['source_identity'],
         'renderer_profile': event.payload['renderer_profile'],
         'source_packs': render['source_packs'], 'publication_count': render['publication_count'],
     }))
-    # Older completed render events may still record a Blob key. Only the
-    # digest is needed now that consumers recreate NDJSON from the raw ZIP.
+    # The projection is temporary and shared by metadata and indexing.
     projection = {
         'sha256': render['projection']['sha256'],
         'bytes': render['projection']['bytes'],
     }
-    metadata = run_worker(store, 'metadata', {
+    metadata_payload = {
         'raw': raw,
         'source_generation': event.payload['source_generation'],
         'renderer_profile': event.payload['renderer_profile'],
         'source_packs': render['source_packs'],
         'projection': projection,
         'snapshot_id': projection['sha256'],
-    })
+    }
+    metadata = checkpoint(store, 'metadata', metadata_payload,
+                          lambda: project_metadata(service, metadata_payload, projection_path, work / 'metadata'))
 
     source_generation = generation['generation_id']
     generation_manifests = [{
@@ -355,9 +324,12 @@ def run_pipeline(store, event: PipelineEvent) -> dict:
         'purge_generation_ids': [],
         'selected_publication_uids': selections,
     }
-    index = index_with_serving_paused(store, index_payload)
     metadata_count = metadata.get('publication_count', metadata.get('metadata', {}).get('publication_count'))
-    if metadata_count != render['publication_count'] or index['publication_count'] != render['publication_count']:
+    if metadata_count != render['publication_count']:
+        raise RuntimeError('stage publication counts differ')
+    index = index_with_serving_paused(store, index_payload,
+                                      lambda: indexer(index_payload, projection_path, work))
+    if index['publication_count'] != render['publication_count']:
         raise RuntimeError('stage publication counts differ')
 
     release = PipelineEvent('release', {
@@ -370,49 +342,4 @@ def run_pipeline(store, event: PipelineEvent) -> dict:
         'fulltext': index['fulltext'],
         'metadata': {'snapshots': [item for item in snapshots if item['generation_id'] not in superseded]},
     })
-    return DownstreamOrchestrator(store).run_release(release, candidate_canary)
-
-def main() -> int:
-    diagnostic_seconds = int(os.environ.get('DIAGNOSTIC_TRACEBACK_SECONDS', '0'))
-    if diagnostic_seconds:
-        import faulthandler
-        faulthandler.dump_traceback_later(diagnostic_seconds, repeat=True)
-    from azure.identity import DefaultAzureCredential
-    from azure.storage.queue import QueueClient
-    account = required('AZURE_STORAGE_ACCOUNT')
-    store = AzureBlobReleaseStore(f'https://{account}.blob.core.windows.net', 'releases')
-    queue = QueueClient(account_url=f'https://{account}.queue.core.windows.net',
-                        queue_name=required('PIPELINE_EVENT_QUEUE'), credential=DefaultAzureCredential())
-    message = next(queue.receive_messages(messages_per_page=1, visibility_timeout=300), None)
-    if message is None:
-        return 0
-    data = json.loads(message.content)
-    event = PipelineEvent.from_dict(json.loads(store.read(data['event_key'])))
-    # Renew invisibility while the indexer runs, preserving at-most-one controller.
-    import threading
-    done = threading.Event()
-    def renew() -> None:
-        nonlocal message
-        while not done.wait(120):
-            message = queue.update_message(message, visibility_timeout=300)
-    thread = threading.Thread(target=renew, daemon=True)
-    thread.start()
-    try:
-        result = run_pipeline(store, event)
-        if os.environ.get('STOP_SERVING_AFTER_RELEASE', 'true').lower() == 'true' and _serving_arm() == 'Running':
-            _serving_arm('stop')
-            _wait_serving_status('Stopped')
-        queue.delete_message(message)
-        print(json.dumps(result, sort_keys=True))
-        return 0
-    finally:
-        try:
-            if os.environ.get('STOP_SERVING_AFTER_RELEASE', 'true').lower() == 'true' and _serving_arm() == 'Running':
-                _serving_arm('stop')
-                _wait_serving_status('Stopped')
-        finally:
-            done.set()
-            thread.join(timeout=2)
-
-if __name__ == '__main__':
-    raise SystemExit(main())
+    return DownstreamOrchestrator(store).run_release(release, canary)

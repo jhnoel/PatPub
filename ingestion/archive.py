@@ -1,4 +1,4 @@
-"""Recreate a verified, temporary NDJSON render from an immutable raw ZIP."""
+"""Render an immutable archive once for both metadata and full-text indexing."""
 
 from __future__ import annotations
 
@@ -49,12 +49,8 @@ def _verify(path: Path, artifact: Any, name: str) -> None:
         raise RuntimeError(f"{name} does not match its recorded bytes and SHA-256")
 
 
-def render_from_raw(service: Any, payload: Mapping[str, Any], work: Path) -> Path:
-    """Download the raw ZIP, rerender, and verify the renderer's exact outputs.
-
-    The caller owns ``work`` and may remove the NDJSON as soon as its job ends.
-    No projection Blob is read or written.
-    """
+def prepare_archive(service: Any, payload: Mapping[str, Any], work: Path) -> tuple[Path, dict]:
+    """Validate raw identity and return one shared temporary projection."""
     raw = payload.get("raw")
     if not isinstance(raw, Mapping):
         raise RuntimeError("render event has no raw archive")
@@ -72,20 +68,6 @@ def render_from_raw(service: Any, payload: Mapping[str, Any], work: Path) -> Pat
     if generation != expected_generation:
         raise RuntimeError("source generation does not match the raw archive and renderer")
 
-    projection = payload.get("projection")
-    if not isinstance(projection, Mapping) or "key" in projection:
-        raise RuntimeError("render event requires a projection digest without a Blob key")
-    _expected_artifact(projection, "projection")
-    packs = payload.get("source_packs")
-    if not isinstance(packs, list) or len(packs) != 1:
-        raise RuntimeError("render event requires one expected source pack")
-    pack_ref = packs[0]
-    if not isinstance(pack_ref, Mapping) or not str(pack_ref.get("key") or "").startswith("source/v1/packs/"):
-        raise RuntimeError("source pack key is invalid")
-    pack_sha, _ = _expected_artifact(pack_ref, "source pack")
-    if pack_ref["key"] != f"source/v1/packs/{pack_sha}.zst":
-        raise RuntimeError("source pack key does not match its SHA-256")
-
     work.mkdir(parents=True, exist_ok=True)
     archive_path = work / "raw.zip"
     with archive_path.open("wb") as handle:
@@ -102,11 +84,18 @@ def render_from_raw(service: Any, payload: Mapping[str, Any], work: Path) -> Pat
             [RENDERER_BINARY, "project", str(archive_path), str(projection_path), generation, str(pack_path)],
             check=True,
         )
-    _verify(projection_path, projection, "projection")
-    _verify(pack_path, pack_ref, "source pack")
+    pack_sha = _digest(pack_path)
+    pack_ref = {"key": f"source/v1/packs/{pack_sha}.zst", "sha256": pack_sha, "bytes": pack_path.stat().st_size}
+    from .artifacts import upload_file
+    upload_file(service.get_blob_client("source", pack_ref["key"].split("/", 1)[1]), pack_path)
+    result = {"source_packs": [pack_ref],
+              "projection": {"sha256": _digest(projection_path), "bytes": projection_path.stat().st_size},
+              "publication_count": sum(1 for line in projection_path.open("rb") if line.strip())}
+    if result["publication_count"] < 1:
+        raise RuntimeError("archive produced no publications")
     archive_path.unlink()
     pack_path.unlink()
-    return projection_path
+    return projection_path, result
 
 
 def render_aps(archive: Path, projection: Path, pack: Path, generation: str, work: Path, archive_name: str) -> None:

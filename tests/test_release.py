@@ -227,22 +227,6 @@ def test_incremental_release_keeps_two_immutable_shards_and_snapshots(tmp_path: 
     assert len(publisher.verify_selector(selector).fulltext["shards"]) == 2
 
 
-def test_verified_artifact_reuse_requires_same_digest_size_and_blob_version(monkeypatch):
-    from types import SimpleNamespace
-    from ingestion.release import AzureBlobReleaseStore
-    monkeypatch.setenv('ARTIFACT_VERSION_CACHE_KEY', 'migration/cache.json')
-    artifact = {'key': 'source/v1/packs/example.zst', 'sha256': 'a' * 64, 'bytes': 9}
-    store = AzureBlobReleaseStore.__new__(AzureBlobReleaseStore)
-    store._version_cache = {artifact['key']: dict(artifact, etag='version-one')}
-    store._blob = lambda key: SimpleNamespace(get_blob_properties=lambda: SimpleNamespace(size=9, etag='version-one'))
-    assert store.verified_artifact(artifact)
-    assert not store.verified_artifact(dict(artifact, sha256='b' * 64))
-    store._blob = lambda key: SimpleNamespace(get_blob_properties=lambda: SimpleNamespace(size=9, etag='version-two'))
-    assert not store.verified_artifact(artifact)
-    store._blob = lambda key: SimpleNamespace(get_blob_properties=lambda: SimpleNamespace(size=10, etag='version-one'))
-    assert not store.verified_artifact(artifact)
-
-
 def test_azure_immutable_json_cache_keeps_selector_fresh(monkeypatch):
     from ingestion.release import AzureBlobReleaseStore
     monkeypatch.setenv("CACHE_IMMUTABLE_JSON", "true")
@@ -263,20 +247,3 @@ def test_azure_immutable_json_cache_keeps_selector_fresh(monkeypatch):
     assert store.read("releases/current.json") == b"second"
     assert calls.count("source/generation.json") == 1
     assert calls.count("releases/current.json") == 2
-
-
-def test_listing_etags_match_quoted_verified_versions(monkeypatch):
-    from ingestion.release import AzureBlobReleaseStore
-    monkeypatch.setenv('ARTIFACT_VERSION_CACHE_KEY', 'migration/cache.json')
-    monkeypatch.setenv('BATCH_ETAG_VALIDATION', 'true')
-    artifact = {'key': 'source/a', 'sha256': 'a' * 64, 'bytes': 9}
-    store = object.__new__(AzureBlobReleaseStore)
-    store._version_cache = {artifact['key']: dict(artifact, etag='"0x123"')}
-    store._containers = {'source': None}
-    store._default_container = 'releases'
-    store._current_versions = {'source': {'a': (9, '0x123')}}
-    assert store.verified_artifact(artifact)
-    store._current_versions['source']['a'] = (9, '0x124')
-    assert not store.verified_artifact(artifact)
-    store._current_versions['source']['a'] = (10, '0x123')
-    assert not store.verified_artifact(artifact)

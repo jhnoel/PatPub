@@ -6,10 +6,10 @@ not create modules or change resource addresses.
 | File | Responsibility |
 | --- | --- |
 | `platform.tf` | Resource group, Key Vault, registry, logging, environment, budget |
-| `storage.tf` | Publication and Quickwit storage, pipeline queue, protected state container |
-| `identities.tf` | Deployment context and six workload identities |
-| `permissions.tf` | Container-scoped access, registry pulls, queue/vault access, controller roles |
-| `ingestion.tf` | Daily fetch, render, metadata, indexer, and queue-driven orchestrator jobs |
+| `storage.tf` | Publication and Quickwit storage, protected state container |
+| `identities.tf` | Deployment context and two workload identities |
+| `permissions.tf` | Container-scoped access, registry pulls, vault access and the serving-controller role |
+| `ingestion.tf` | One hourly ingestion job for backfill and steady state |
 | `serving.tf` | Single combined Quickwit/API app, probes, scale to zero, authentication |
 | `variables.tf`, `outputs.tf` | Deployment inputs and operator outputs |
 | `versions.tf`, `.terraform.lock.hcl` | Backend/provider configuration and locked provider versions |
@@ -30,8 +30,9 @@ Review the saved plan before applying. State, plan files, backend settings,
 credentials, and deployment-specific inputs remain private. The state container
 has `prevent_destroy`; workload identities have no access to it.
 
-Persisted corpus compatibility records remain in storage; see
-[operations](../docs/operations.md).
+For a new deployment, [the launcher](../docs/deployment.md) creates isolated local
+state and provisions the entire stack. It does not require an existing remote
+backend. Existing deployments keep their backend and corpus namespaces.
 
 Image build contexts and the update procedure are in
 [deployment](../docs/deployment.md).

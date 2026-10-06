@@ -1,72 +1,97 @@
-# Steady-state operations
+# Operation and recovery
 
-## Routine ingestion
+## Ingestion
 
-Fetch runs daily at 12:00 UTC with a maximum of two archives per run. Immutable
-`fetch/v1/` markers prevent repeat downloads. Fetch writes raw archives and queue
-events; one queue-triggered orchestrator runs rendering, metadata, indexing,
-release validation, and selector publication. Metadata uses 16 buckets for new
-archives. Immutable artifacts and result checkpoints support retries.
+One hourly worker discovers archives, downloads immutable ZIPs, renders each
+archive once, produces Parquet metadata and appends to Quickwit using that same
+temporary projection. It validates the release and atomically changes the active
+selector after a search and source-hydration canary. The same path handles the
+first archive, backlog and new weekly publications. The local `ingestion.toml`
+chooses enabled categories and year ranges. Backfill merges their catalogs from
+oldest missing archive to newest. Disabled categories are excluded from both
+acquisition and pending-event processing.
 
-The controller stops serving during index writes, then starts it for the canary.
-An index writer must never overlap readers or another writer. Search can be
-unavailable during ingestion and cold starts. Serving returns to zero replicas
-when idle; frequent external health polling can keep it running.
+Existing validated archive generations are recognized even when an older
+deployment lacks fetch markers. A small inventory, cached against the selected
+release digest, compares publisher filenames, sizes and modification dates.
+Unchanged published archives retain their existing renderer profile. New
+revisions or recent publisher updates use normal acquisition; absent dates
+never silently skip an archive. This does not download or hash historical raw
+archives or rebuild the index.
 
-For a failed archive, inspect the fetch/orchestrator and downstream job logs,
-the event record, result checkpoint, and current selector. Verify no worker is
-still writing before retrying the original immutable event. Do not manually
-advance the selector past a failed canary. An already-published generation is
-idempotent and returns the current release.
+`fetch/v1/` markers deduplicate acquisition. Immutable `events/render-*.json`
+records retain pending work; stage results under `events/results/` retain
+completed metadata and index work. `ingestion/completed/` records publication.
+A crash between these writes leaves discoverable work for the next run. A retry
+renders once to reconstruct its temporary projection and checks it against the
+previous render receipt; metadata and index results can be reused. A generation
+already present in the selected release returns immediately.
 
-## Verify serving after an update
+A renewable 60-second Blob lease protects the whole worker. Overlapping scheduled
+or manual executions exit without processing. Renewal failure terminates the
+worker's process group, including Quickwit. Process death lets the lease expire,
+so a permanent manual unlock is unnecessary.
 
-Set `ROUTER_BEARER_TOKEN` in the private process environment, then run the
-operator check with a query known to return a publication in the corpus:
+The worker stops the serving app before running its synchronous Quickwit writer,
+waits for the writer to exit, then restarts serving for the canary. This remains
+necessary because Quickwit uses a file-backed metastore. Search is unavailable
+during writes and cold starts. A failed index append leaves serving stopped;
+the next worker reconciles the incomplete generation and resumes serving.
+
+Normal validation creates hash evidence under `integrity/v1/`. Each proof is
+bound to the exact Blob key, ETag, size and digest. New or changed objects are
+hashed; unchanged versions reuse verified hashes. Existing deployments also
+automatically adopt their previous verified receipts after checking the graph
+proof and matching Blob versions. This copies small evidence records without
+rereading the corpus. Missing evidence for previously published artifacts fails
+closed instead of triggering a historical rehash. New deployments create these
+records through ordinary ingestion and need no compatibility files.
+
+Corrections can supersede a generation only if their metadata preserves all its
+publication IDs. A correction that removes publications fails before indexing
+and keeps the previous release selected. This conservative rule does not accept
+an out-of-band withdrawal list.
+
+Inspect the single ingestion job log, archive event, stage receipts and current
+selector after a failure. Retry by starting the ingestion job; do not edit the
+selector or delete stage receipts to bypass a failed canary. The first release
+can take a full archive's download/render/index duration. Increasing
+By default each hourly run continues through the selected backlog until it is
+caught up. Set a positive `archives_per_run` value in the saved TOML file to
+deliberately bound a run; Azure's 12-hour job timeout remains the hard limit, and
+receipts let a later scheduled run resume safely.
+
+## Verify serving
+
+Set `ROUTER_BEARER_TOKEN` in the private environment, then use a query expected to
+match your corpus:
 
 ```sh
-PATPUB_URL=https://api.jamienoel.com/patpub \
-python scripts/check_serving.py --query 'wireless charging'
+PATPUB_URL=https://your-serving-host python scripts/check_serving.py --query 'wireless charging'
 ```
 
-Set `SERVING_URL` to the origin URL to include readiness. Set `PATPUB_MCP_KEY` to
-include MCP initialization and tool invocation. The check verifies missing-key
-rejection, authenticated OpenAPI access, search results and release IDs. It makes
-live requests and can wake a zero-replica service; run it on demand.
-
-## Durable corpus compatibility
-
-Historical migration tools are separate from this repository. Their retained
-outputs are still part of the running corpus contract:
-
-- Existing release manifests, source generations, metadata snapshots, selected
-  publication IDs, and superseded generation IDs remain immutable.
-- `migration/v1/artifact-version-capture.json`,
-  `migration/v1/full-release-graph-validation.json`, and
-  `migration/v1/full-release-candidate.json` support verified artifact reuse.
-- `migration/v1/integrity/` contains hash evidence used by the indexer when its
-  verification cache is enabled.
-- `migration/v1/correction-withdrawal-exact.json` is consulted when a corrected
-  archive omits previously selected publications.
-
-Preserve these objects and profile-specific readers. Their `migration/` names
-are persisted data keys, not disposable temporary files. New or changed artifacts
-still require validation. Removing historical jobs does not remove their data.
+Set `SERVING_URL` to include readiness and `PATPUB_MCP_KEY` to include MCP checks.
+For a direct serving URL, set `PATPUB_MCP_PATH=/patpub/mcp`; the gateway default
+is `/mcp`.
+The check verifies authentication, OpenAPI, search and release identity. It can
+wake a zero-replica service; use it on demand.
 
 ## Recovery and rollback
 
-Keep retained raw archives, immutable releases, source packs, metadata, the
-validated Quickwit metastore, and the matching split set. Blob versioning and
-soft-delete provide a limited recovery window; they do not substitute for a
-validated rollback record.
+Retain raw archives, immutable generations/releases, source packs, metadata,
+metastore snapshots and matching split files. Existing selected-publication
+inventories and renderer profiles remain supported. Keep previous verification receipts during an upgrade: the worker
+automatically adopts the verified aggregate cache after checking its graph proof,
+then reuses matching versions from batched Blob listings. No corpus bytes are
+read during this adoption. Later published artifacts absent from that old cache
+can also reuse their validated release digest when Azure confirms their creation
+and last-modified timestamps are equal and strictly before release publication.
+Changed objects cannot use this path. Blob versioning and soft-delete offer a
+limited recovery window.
 
-Before an index-changing operation, record the selector bytes/ETag, metastore
-snapshot, matching split versions, and image digests. Pause new ingestion and
-stop readers and writers before restoring data. Restore the metastore and splits
-bound to the chosen release, then update the selector with compare-and-swap.
-Never roll back only `releases/current.json` against an unrelated metastore.
-
-Restart serving and verify readiness, authentication, release identity, known
-publication counts, and source hydration across the affected renderer profiles.
-Resume ingestion only after validation. Corpus-specific repair and historical
-reconstruction tools remain in the private maintenance archive.
+Before an index-changing update, record the selector, metastore snapshot,
+matching split versions and image digests. Stop readers and writers before
+restoring the metastore and split set bound to the desired release, then update
+the selector using compare-and-swap. Restoring only the selector against an
+unrelated live index is insufficient. Verify counts, authentication, release
+identity and source hydration before resuming ingestion.

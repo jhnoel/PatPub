@@ -26,3 +26,7 @@ snapshots
 source-packs
 indexes
 metastore
+
+.patpub
+
+ingestion.toml

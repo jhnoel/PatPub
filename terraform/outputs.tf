@@ -38,22 +38,10 @@ output "acr_login_server" {
   value = azurerm_container_registry.patpub.login_server
 }
 
-output "pipeline_identity_client_ids" {
-  value = {
-    fetch        = azurerm_user_assigned_identity.fetch.client_id
-    renderer     = azurerm_user_assigned_identity.renderer.client_id
-    metadata     = azurerm_user_assigned_identity.metadata.client_id
-    indexer      = azurerm_user_assigned_identity.indexer.client_id
-    orchestrator = azurerm_user_assigned_identity.orchestrator.client_id
-  }
+output "ingestion_identity_client_id" {
+  value = azurerm_user_assigned_identity.ingestion.client_id
 }
 
-output "pipeline_job_resource_ids" {
-  value = var.compute_enabled ? {
-    fetch        = azurerm_container_app_job.fetch[0].id
-    renderer     = azurerm_container_app_job.renderer[0].id
-    metadata     = azurerm_container_app_job.metadata[0].id
-    indexer      = azurerm_container_app_job.indexer[0].id
-    orchestrator = azurerm_container_app_job.orchestrator[0].id
-  } : {}
+output "ingestion_job_resource_id" {
+  value = var.compute_enabled ? azurerm_container_app_job.ingestion[0].id : null
 }

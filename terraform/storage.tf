@@ -66,11 +66,6 @@ resource "azurerm_storage_container" "downstream" {
   container_access_type = "private"
 }
 
-resource "azurerm_storage_queue" "pipeline_events" {
-  name               = var.orchestration_queue_name
-  storage_account_id = azurerm_storage_account.patpub.id
-}
-
 resource "azurerm_storage_container" "terraform_state" {
   name                  = "terraform-state"
   storage_account_id    = azurerm_storage_account.patpub.id

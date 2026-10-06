@@ -2,7 +2,15 @@
 terraform.tfstate
 terraform.tfstate.*
 *.tfvars
+*.tfvars.json
+# Generated Terraform binary plans and conventional text/JSON dumps.
 *.tfplan
+*.tfplan.*
+tfplan
+tfplan.*
+terraform-plan.json
+terraform-plan.txt
+terraform-plan.log
 build/
 dist/
 target/
@@ -45,3 +53,8 @@ corpus-data/
 
 # Deployment-specific Terraform backend settings.
 terraform/backend.local.hcl
+
+# Isolated launcher state and credentials.
+.patpub/
+
+ingestion.toml

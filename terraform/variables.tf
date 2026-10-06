@@ -41,7 +41,7 @@ variable "compute_enabled" {
 }
 
 variable "ingestion_enabled" {
-  description = "Run scheduled fetch and queue-triggered orchestration. False creates both jobs with manual triggers. Changing this replaces those jobs; switch only while they are idle."
+  description = "Schedule ingestion hourly. False creates one manually triggered job. Change triggers only while the worker is idle."
   type        = bool
   default     = false
 }
@@ -56,50 +56,30 @@ variable "monthly_budget_usd" {
   }
 }
 
-variable "fetch_image" {
-  description = "Immutable image digest reference for the scheduled USPTO publication fetch job."
+variable "ingestion_image" {
+  description = "Immutable digest reference for the single ingestion worker."
   type        = string
   default     = ""
 }
 
-variable "renderer_image" {
-  description = "Immutable image digest reference for the publication renderer."
-  type        = string
-  default     = ""
-}
-
-variable "metadata_image" {
-  description = "Immutable image digest reference for the publication metadata projection job."
-  type        = string
-  default     = ""
-}
-
-variable "indexer_image" {
-  description = "Immutable image digest reference for the Quickwit indexer."
-  type        = string
-  default     = ""
-}
-
-variable "indexer_cpu" {
+variable "ingestion_cpu" {
   type    = number
   default = 2
 }
 
-variable "indexer_memory" {
+variable "ingestion_memory" {
   type    = string
   default = "4Gi"
 }
 
-variable "orchestration_image" {
-  description = "Immutable image digest reference for the release orchestration job."
+variable "ingestion_config_json" {
+  description = "Validated local ingestion.toml serialized by the launcher; category choices and optional per-run archive cap (0 drains until caught up)."
   type        = string
-  default     = ""
-}
-
-variable "orchestration_queue_name" {
-  description = "Azure Queue that carries immutable pipeline event references."
-  type        = string
-  default     = "pipeline-events"
+  default     = "{\"schema_version\":1,\"archives_per_run\":0,\"categories\":{\"pre_1976_grants\":{\"enabled\":false},\"aps_grants\":{\"enabled\":true},\"xml_grants\":{\"enabled\":true},\"application_publications\":{\"enabled\":true}}}"
+  validation {
+    condition     = can(jsondecode(var.ingestion_config_json))
+    error_message = "ingestion_config_json must be valid JSON generated from ingestion.toml."
+  }
 }
 
 variable "patent_index_id" {
@@ -150,7 +130,7 @@ variable "external_ingress_enabled" {
 }
 
 variable "uspto_api_key_secret_name" {
-  description = "Name of the USPTO API key secret restored into this project's Key Vault outside Terraform."
+  description = "Name of the USPTO API key secret supplied to this deployment's Key Vault."
   type        = string
   default     = "uspto-odp-api-key"
 }
@@ -164,7 +144,7 @@ variable "candidate_canary_url" {
 variable "candidate_canary_query" {
   description = "JSON query sent to the candidate search endpoint."
   type        = string
-  default     = ""
+  default     = "{\"query\":\"*\",\"max_hits\":1}"
 }
 
 variable "candidate_publication_uid" {

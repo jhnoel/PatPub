@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ingestion import render_local
+from ingestion import archive
 
 
 class _RawService:
@@ -22,7 +22,7 @@ class _RawService:
 
 def _payload(raw: bytes, projection: bytes, pack: bytes) -> dict:
     raw_sha = hashlib.sha256(raw).hexdigest()
-    profile = render_local.RENDERER_PROFILE
+    profile = archive.RENDERER_PROFILE
     generation = "sha256:" + hashlib.sha256(
         (json.dumps({"raw_sha256": raw_sha, "renderer_profile": profile}, sort_keys=True, separators=(",", ":")) + "\n").encode()
     ).hexdigest()
@@ -36,33 +36,33 @@ def _payload(raw: bytes, projection: bytes, pack: bytes) -> dict:
     }
 
 
-def test_consumers_recreate_verified_projection_from_raw_zip(tmp_path: Path, monkeypatch):
+def test_archive_is_rendered_once_for_both_consumers(tmp_path: Path, monkeypatch):
     raw, projection, pack = b"raw zip", b"{\"publication_uid\":\"US:1:B2\"}\n", b"source pack"
     payload = _payload(raw, projection, pack)
     service = _RawService(raw)
 
     def render(command, *, check):
         assert check is True
-        assert command[:2] == [render_local.RENDERER_BINARY, "project"]
+        assert command[:2] == [archive.RENDERER_BINARY, "project"]
         Path(command[3]).write_bytes(projection)
         Path(command[5]).write_bytes(pack)
 
-    monkeypatch.setattr(render_local.subprocess, "run", render)
-    output = render_local.render_from_raw(service, payload, tmp_path)
+    monkeypatch.setattr(archive.subprocess, "run", render)
+    monkeypatch.setattr("ingestion.artifacts.upload_file", lambda blob, path: None)
+    output, result = archive.prepare_archive(service, payload, tmp_path)
+    assert result["projection"] == payload["projection"]
+    assert result["source_packs"] == payload["source_packs"]
+    assert result["publication_count"] == 1
     assert output.read_bytes() == projection
-    assert service.requests == [("raw", payload["raw"]["key"].split("/", 1)[1])]
+    assert service.requests[0] == ("raw", payload["raw"]["key"].split("/", 1)[1])
+    assert sum(container == "raw" for container, _ in service.requests) == 1
     assert not (tmp_path / "raw.zip").exists()
     assert not (tmp_path / "pack.zst").exists()
 
 
-def test_recreated_projection_must_match_renderer_digest(tmp_path: Path, monkeypatch):
-    payload = _payload(b"raw zip", b"expected\n", b"source pack")
-    service = _RawService(b"raw zip")
-
-    def render(command, *, check):
-        Path(command[3]).write_bytes(b"different\n")
-        Path(command[5]).write_bytes(b"source pack")
-
-    monkeypatch.setattr(render_local.subprocess, "run", render)
-    with pytest.raises(RuntimeError, match="projection does not match"):
-        render_local.render_from_raw(service, payload, tmp_path)
+def test_raw_archive_must_match_its_digest_before_rendering(tmp_path, monkeypatch):
+    payload = _payload(b"expected raw zip", b"expected\n", b"source pack")
+    service = _RawService(b"wrong raw zip")
+    monkeypatch.setattr(archive.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not render corrupt raw"))
+    with pytest.raises(RuntimeError, match="raw archive does not match"):
+        archive.prepare_archive(service, payload, tmp_path)

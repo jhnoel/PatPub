@@ -1,11 +1,8 @@
 """Deterministic downstream release orchestration.
 
-The USPTO downloader ends when an immutable raw archive and its landing
-manifest exist.  This module owns everything after that boundary.  It is a
-small, dependency-free control-plane implementation that can run behind an
-Azure Queue/Functions trigger or as a Container Apps job.  The local store is
-used for tests; the stage boundaries are deliberately expressed in terms of
-the same immutable Blob operations as :mod:`ingestion.release`.
+The ingestion worker uses these deterministic records for generation and
+release publication. The local store exercises the same immutable-object
+operations as the production store.
 
 There are two stages:
 
@@ -19,14 +16,13 @@ There are two stages:
     selector.
 
 Events contain no wall-clock fields.  Their IDs are derived from a canonical
-payload, so retries and queue redelivery produce the same event ID.  Stage
+payload, so retries produce the same event ID.  Stage
 results are immutable records keyed by that ID and are returned unchanged on
 duplicate delivery.
 """
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
 import hashlib
 import json
@@ -73,7 +69,7 @@ def _artifact(value: Mapping[str, Any], name: str) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class PipelineEvent:
-    """Immutable queue event with a deterministic identity.
+    """Immutable stage record with a deterministic identity.
 
     ``attempt`` is metadata for observability and is intentionally excluded
     from the event identity.  A retry therefore claims the same durable
@@ -466,27 +462,3 @@ class DownstreamOrchestrator:
                 "selector": selector,
             },
         )
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("event", type=argparse.FileType("r"))
-    parser.add_argument("--root", required=True, help="local Blob root used by this adapter")
-    parser.add_argument(
-        "--canary-ok",
-        action="store_true",
-        help="allow the release canary (required for release events)",
-    )
-    args = parser.parse_args()
-    event = PipelineEvent.from_dict(json.load(args.event))
-    orchestrator = DownstreamOrchestrator(LocalBlobStore(args.root))
-    if event.stage == "generation":
-        result = orchestrator.run_generation(event)
-    else:
-        result = orchestrator.run_release(event, lambda _manifest: args.canary_ok)
-    print(json.dumps(result, sort_keys=True))
-    return 0
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

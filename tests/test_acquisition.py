@@ -2,12 +2,14 @@
 
 import hashlib
 import io
+import json
+from urllib.error import HTTPError
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
-import fetch_cloud
+from ingestion import acquisition as fetch_cloud
 
 
 class Response(io.BytesIO):
@@ -24,6 +26,24 @@ class Response(io.BytesIO):
 
 
 class FetchTests(unittest.TestCase):
+    def test_catalog_retries_throttling_after_provider_delay(self):
+        error = HTTPError('https://api.uspto.gov/catalog', 429, 'throttled', {'Retry-After': '2'}, None)
+        response = Response(json.dumps({'ok': True}).encode(), 200, {})
+        with patch.object(fetch_cloud, 'urlopen', side_effect=[error, response]), \
+             patch.object(fetch_cloud.time, 'sleep') as sleep:
+            self.assertEqual(fetch_cloud.catalog('https://api.uspto.gov/catalog', 'key'), {'ok': True})
+            sleep.assert_called_once_with(2)
+
+    def test_catalog_does_not_retry_invalid_credentials_or_long_provider_windows(self):
+        for status, headers in [(401, {}), (429, {'Retry-After': '3600'})]:
+            error = HTTPError('https://api.uspto.gov/catalog', status, 'rejected', headers, None)
+            with patch.object(fetch_cloud, 'urlopen', side_effect=error) as request, \
+                 patch.object(fetch_cloud.time, 'sleep') as sleep:
+                with self.assertRaises(HTTPError):
+                    fetch_cloud.catalog('https://api.uspto.gov/catalog', 'key')
+                request.assert_called_once()
+                sleep.assert_not_called()
+
     def test_same_filename_new_revision_has_new_identity(self):
         first = {'fileName': 'same.zip', 'fileSize': 10}
         second = {'fileName': 'same.zip', 'fileSize': 11}

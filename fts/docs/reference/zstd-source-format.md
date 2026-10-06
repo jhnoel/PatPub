@@ -17,5 +17,5 @@ archive with a current renderer must not silently replace its recorded source.
 
 Implementations: [XML producer](../../../rust-worker/src/lib.rs),
 [APS producer](../../../aps-worker/src/pack.rs),
-[local rerender](../../../ingestion/render_local.py), and
+[archive rendering](../../../ingestion/archive.py), and
 [router](../../production/serving/api/source_router.py).

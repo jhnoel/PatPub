@@ -1,0 +1,23 @@
+# Copy to ingestion.toml. The local file is ignored by Git and Docker builds.
+# Every enabled category backfills to its earliest available archive in this range.
+schema_version = 1
+# 0 drains all currently missing archives; runs resume after a cloud timeout.
+archives_per_run = 0
+
+[categories.pre_1976_grants]
+enabled = false
+# A pre-1976 full-text/OCR adapter is not implemented; enabling this fails clearly.
+
+[categories.aps_grants]
+enabled = true
+from_year = 1976
+through_year = 2001
+# To keep only 2001 grants, set from_year = 2001; to skip APS, set enabled = false.
+
+[categories.xml_grants]
+enabled = true
+from_year = 2002
+
+[categories.application_publications]
+enabled = true
+from_year = 2001

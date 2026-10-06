@@ -9,17 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 
-def _load_fetch():
-    path = Path(__file__).resolve().parents[1] / "fetch-worker" / "fetch_cloud.py"
-    spec = importlib.util.spec_from_file_location("fetch_cloud_rerender", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-fetch_cloud = _load_fetch()
-
+from ingestion import acquisition as fetch_cloud
 
 class Store:
     def __init__(self) -> None:
@@ -98,9 +88,9 @@ def test_rerender_reads_the_newest_landed_zip_and_skips_uspto():
     store.put("releases", "fetch/v1/PTGRXML/new.json", _marker("ipg.zip", new_sha), newer)
     store.put("raw", f"v1/PTGRXML/{old_sha}.zip", {"present": True})
     store.put("raw", f"v1/PTGRXML/{new_sha}.zip", {"present": True})
-    queued = fetch_cloud.rerender_from_blob(store, Queue(store))
+    queued = fetch_cloud.rerender_from_blob(store)
     assert queued == 1
-    event_key = json.loads(store.messages[0])["event_key"]
+    event_key = next(name for container, name in store.objects if name.startswith("events/render-"))
     event = json.loads(store.objects[("releases", event_key)])
     assert event["payload"]["raw"]["sha256"] == new_sha
     assert event["payload"]["renderer_profile"] == fetch_cloud.PROFILE
@@ -119,7 +109,7 @@ def test_rerender_skips_a_generation_the_active_release_already_serves():
         "source_generations": [generation],
         "source": {"superseded_generation_ids": []},
     })
-    assert fetch_cloud.rerender_from_blob(store, Queue(store)) == 0
+    assert fetch_cloud.rerender_from_blob(store) == 0
     assert store.messages == []
 
 
@@ -137,8 +127,8 @@ def test_profile_change_reenqueues_the_same_blob(monkeypatch):
         "source": {"superseded_generation_ids": []},
     })
     monkeypatch.setattr(fetch_cloud, "PROFILE", old_profile + ":revised")
-    assert fetch_cloud.rerender_from_blob(store, Queue(store)) == 1
-    event = json.loads(store.objects[("releases", json.loads(store.messages[0])["event_key"])])
+    assert fetch_cloud.rerender_from_blob(store) == 1
+    event = json.loads(store.objects[("releases", next(name for container, name in store.objects if name.startswith("events/render-")))])
     assert event["payload"]["renderer_profile"] == old_profile + ":revised"
     assert event["payload"]["raw"]["key"] == f"raw/v1/PTGRXML/{sha}.zip"
     assert event["payload"]["source_generation"] != old_generation
@@ -150,7 +140,7 @@ def test_rerender_fails_when_the_raw_blob_is_missing():
     store.put("releases", "fetch/v1/PTGRXML/one.json", _marker("ipg.zip", sha),
               datetime(2026, 9, 22, tzinfo=timezone.utc))
     with pytest.raises(RuntimeError, match="raw archive"):
-        fetch_cloud.rerender_from_blob(store, Queue(store))
+        fetch_cloud.rerender_from_blob(store)
 
 
 def test_fetch_one_skips_a_seeded_marker_before_downloading(monkeypatch):
@@ -163,7 +153,7 @@ def test_fetch_one_skips_a_seeded_marker_before_downloading(monkeypatch):
     monkeypatch.setattr(fetch_cloud, "remote_validator", lambda url, api_key: "")
     source_id = fetch_cloud.archive_identity("PTGRXML", item, "")
     store.put("releases", f"fetch/v1/PTGRXML/{source_id}.json", {"product": "PTGRXML"})
-    assert fetch_cloud.fetch_one(store, Queue(store), item, "PTGRXML", "key") is False
+    assert fetch_cloud.fetch_one(store, item, "PTGRXML", "key") is False
     assert store.messages == []
 
 

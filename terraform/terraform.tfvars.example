@@ -5,30 +5,19 @@ name_prefix         = "patpub"
 # Pick a globally unique suffix for storage and registry names.
 resource_suffix = "change123"
 
-# Preserve the existing deployment's corpus index and metastore namespace.
-# Use the defaults (patents / metastores/production-v1) for a fresh empty corpus.
-patent_index_id         = "patents-corpus"
-index_metastore_prefix = "metastores/corpus-v1"
+# Fresh deployments use an empty durable index; the worker creates it.
+patent_index_id         = "patents"
+index_metastore_prefix  = "metastores/production-v1"
+compute_enabled        = false
+ingestion_enabled      = false
+monthly_budget_usd     = 20
 
-# Starts with storage, queue, registry, identities, logging, and a Key Vault.
-# Restore the USPTO key and publish immutable images before enabling compute.
-compute_enabled    = false
-ingestion_enabled  = false
-monthly_budget_usd = 20
-
-# Use immutable @sha256: image references built from this repository.
-fetch_image         = ""
-renderer_image      = ""
-metadata_image      = ""
-indexer_image       = ""
-orchestration_image = ""
-container_image     = ""
-
-# Terraform creates a PatPub-owned vault. Restore uspto-odp-api-key into it
-# outside Terraform before setting compute_enabled=true.
+# Build the two images with scripts/launch_azure.py.
+ingestion_image = ""
+container_image = ""
 
 external_ingress_enabled = false
-candidate_canary_query   = "{\"query\":\"patent\",\"max_hits\":1}"
+candidate_canary_query   = "{\"query\":\"*\",\"max_hits\":1}"
 candidate_publication_uid = ""
 candidate_canary_url       = ""
 # Supply through TF_VAR_router_bearer_token or an encrypted tfvars source.

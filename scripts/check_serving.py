@@ -60,19 +60,20 @@ def main():
         require(isinstance(hit.get("snippets"), list), "search hit lacks hydrated snippets")
     print("REST authentication, OpenAPI, and release-aware search passed")
     key = os.environ.get("PATPUB_MCP_KEY", "").strip()
+    mcp_path = os.environ.get("PATPUB_MCP_PATH", "/mcp")
     if key:
         headers = {"accept": "application/json, text/event-stream"}
         initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
             "protocolVersion": "2025-03-26", "capabilities": {},
             "clientInfo": {"name": "patpub-maintenance", "version": "1"}}}
-        status, _ = call(args.url, "/mcp", headers=headers, body=initialize)
+        status, _ = call(args.url, mcp_path, headers=headers, body=initialize)
         require(status == 401, "missing MCP key accepted")
         headers["x-functions-key"] = key
-        status, response = call(args.url, "/mcp", headers=headers, body=initialize)
+        status, response = call(args.url, mcp_path, headers=headers, body=initialize)
         require(status == 200 and "result" in response, "MCP initialization failed")
         request = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
             "name": "search_patents", "arguments": {"query": args.query, "max_hits": 1}}}
-        status, response = call(args.url, "/mcp", headers=headers, body=request)
+        status, response = call(args.url, mcp_path, headers=headers, body=request)
         require(status == 200 and "result" in response
                 and not response["result"].get("isError"), "MCP search failed")
         print("MCP authentication and search passed")

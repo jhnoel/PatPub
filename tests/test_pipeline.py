@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import pytest
+import hashlib
+from ingestion.models import canonical_json
 
-from ingestion import orchestration_cloud as cloud
+from ingestion import pipeline as cloud
+from ingestion import archive, projection
 from ingestion.orchestration import PipelineEvent
 from ingestion.store import LocalBlobStore
 
@@ -22,16 +25,18 @@ def test_new_archive_keeps_prior_generation_without_projection_blobs(tmp_path, m
     }
     store.write_json_if_absent("releases/old.json", prior)
     store.write_json_if_absent("old", {"generation_id": old, "source_identity": "f" * 64, "publication_count": 2})
-    store.write_json_if_absent("releases/current.json", {"manifest_key": "releases/old.json"})
+    store.write_json_if_absent("releases/current.json", {"manifest_key": "releases/old.json",
+        "manifest_sha256": hashlib.sha256(canonical_json(store.read_json("releases/old.json"))).hexdigest()})
     projection = {"key": "projections/new.ndjson", "sha256": "c" * 64, "bytes": 1}
-    monkeypatch.setattr(cloud, "run_worker", lambda _store, stage, _payload: {
+    monkeypatch.setattr(cloud, "checkpoint", lambda _store, stage, _payload, _compute: {
         "render": {"source_packs": [], "projection": projection, "publication_count": 1},
         "metadata": {"metadata": {"parquet": {}, "publication_count": 1}},
         "index": {"fulltext": {"index_id": "patents-" + "c" * 12}, "publication_count": 1},
     }[stage])
+    monkeypatch.setattr(archive, "prepare_archive", lambda *args: (tmp_path / "projection.ndjson", {"source_packs": [], "projection": {k: projection[k] for k in ("sha256", "bytes")}, "publication_count": 1}))
     indexed = {}
 
-    def capture_index(_store, payload):
+    def capture_index(_store, payload, _compute):
         indexed.update(payload)
         return {
             "fulltext": {"index_id": "patents", "document_count": payload["expected_total_count"]},
@@ -56,7 +61,7 @@ def test_new_archive_keeps_prior_generation_without_projection_blobs(tmp_path, m
         "raw": {"key": "raw/new.zip", "sha256": "d" * 64, "bytes": 1},
         "source_generation": new, "source_identity": "e" * 64, "renderer_profile": new_profile,
     })
-    release = cloud.run_pipeline(store, event)
+    release = cloud.run_pipeline(store, event, tmp_path, service=None, indexer=None)
     assert release["publication_count"] == 3
     assert release["fulltext"]["index_id"] == "patents"
     assert [item["generation_id"] for item in release["metadata"]["snapshots"]] == [old, new]
@@ -81,16 +86,18 @@ def test_revision_supersedes_prior_generation(tmp_path, monkeypatch, new_profile
         "fulltext": {"index_id": "patents", "document_count": 2},
         "metadata": {"snapshots": [{"generation_id": old, "publication_count": 2, "parquet": {}}]},
     })
-    store.write_json_if_absent("releases/current.json", {"manifest_key": "releases/old.json"})
+    store.write_json_if_absent("releases/current.json", {"manifest_key": "releases/old.json",
+        "manifest_sha256": hashlib.sha256(canonical_json(store.read_json("releases/old.json"))).hexdigest()})
     projection = {"key": "projections/new.ndjson", "sha256": "c" * 64, "bytes": 1}
-    monkeypatch.setattr(cloud, "run_worker", lambda _store, stage, _payload: {
+    monkeypatch.setattr(cloud, "checkpoint", lambda _store, stage, _payload, _compute: {
         "render": {"source_packs": [], "projection": projection, "publication_count": 1},
         "metadata": {"metadata": {"parquet": {}}, "publication_count": 1},
         "index": {"fulltext": {"index_id": "patents-" + "c" * 12}, "publication_count": 1},
     }[stage])
+    monkeypatch.setattr(archive, "prepare_archive", lambda *args: (tmp_path / "projection.ndjson", {"source_packs": [], "projection": {k: projection[k] for k in ("sha256", "bytes")}, "publication_count": 1}))
     indexed = {}
 
-    def capture_index(_store, payload):
+    def capture_index(_store, payload, _compute):
         indexed.update(payload)
         return {
             "fulltext": {"index_id": "patents", "document_count": payload["expected_total_count"]},
@@ -114,7 +121,7 @@ def test_revision_supersedes_prior_generation(tmp_path, monkeypatch, new_profile
     release = cloud.run_pipeline(store, PipelineEvent("render", {
         "raw": {"key": "raw/new.zip", "sha256": "d" * 64, "bytes": 1},
         "source_generation": new, "source_identity": identity, "renderer_profile": new_profile,
-    }))
+    }), tmp_path, service=None, indexer=None)
     assert release["superseded_generation_ids"] == [old]
     assert release["publication_count"] == 1
     assert release["fulltext"]["document_count"] == 1
@@ -137,10 +144,7 @@ def test_correction_cannot_silently_remove_an_unexplained_publication():
         return {'publication_count': len(uids), 'parquet': {'parts': [{'key': key, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data), 'projection': 'point'}]}}
     old = snapshot('old', ['US:1:B2', 'US:2:B2'])
     new = snapshot('new', ['US:2:B2'])
-    proof_key = 'migration/v1/correction-withdrawal-exact.json'
-    blobs[proof_key] = json.dumps({'publications': []}).encode()
     store = SimpleNamespace(read=lambda key: blobs[key])
     with pytest.raises(RuntimeError, match='explicit preservation'):
         cloud.verify_correction_coverage(store, old, new)
-    blobs[proof_key] = json.dumps({'publications': [{'publication_uid': 'US:1:B2', 'candidate_found': True}]}).encode()
-    cloud.verify_correction_coverage(store, old, new)
+    cloud.verify_correction_coverage(store, new, new)
