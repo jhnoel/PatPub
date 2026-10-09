@@ -378,3 +378,59 @@ def test_router_rejects_modified_generation_manifest():
     )
     with pytest.raises(ReleaseError, match="digest mismatch"):
         router._source_pairs(manifest)
+
+
+@pytest.mark.parametrize("uid", ["", 'US:1:B2" OR *', "US:1:B2/extra"])
+def test_point_read_rejects_invalid_ids_before_release_access(uid):
+    router = Router.__new__(Router)
+    router._active = lambda: pytest.fail("invalid ID accessed the release")
+    with pytest.raises(source_router.SearchQueryError):
+        router.get_patent(uid)
+
+
+@pytest.mark.parametrize("returned_uids", [[], ["US:1:B2"], ["US:2:B2"], ["US:1:B2", "US:1:B2"]])
+def test_point_read_returns_complete_text_and_checks_identity(monkeypatch, returned_uids):
+    router = Router.__new__(Router)
+    router.search_url = "http://quickwit"
+    router.timeout = 65
+    router.max_hydration_bytes = 1024
+    generation = "sha256:" + "a" * 64
+    manifest = SimpleNamespace(
+        release_id="release-1", fulltext={"index_id": "patents-r"},
+        source_generations=[generation], source={},
+    )
+    router._active = lambda: ({"manifest_sha256": "b" * 64}, manifest, "c" * 64)
+    markdown = "<!-- publication_uid: US:1:B2 -->\n# Patent\n\n## Claims\n\nComplete claims.\n"
+    hydrated = []
+    def hydrate(hit, selected_manifest):
+        assert selected_manifest is manifest
+        hydrated.append(hit["publication_uid"])
+        return markdown
+    router._hydrate = hydrate
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            pass
+        def read(self):
+            return json.dumps({"hits": [{"publication_uid": uid, "source_pack_key": "internal"} for uid in returned_uids], "num_hits": len(returned_uids)}).encode()
+    def urlopen(request, **kwargs):
+        query = json.loads(request.data)
+        assert '(publication_uid:"US:1:B2")' in query["query"]
+        assert generation in query["query"]
+        assert query["max_hits"] == 2
+        return Response()
+    monkeypatch.setattr(source_router.urlrequest, "urlopen", urlopen)
+    if not returned_uids:
+        with pytest.raises(source_router.PublicationNotFoundError):
+            router.get_patent("US:1:B2")
+    elif returned_uids == ["US:1:B2"]:
+        result = router.get_patent("US:1:B2")
+        assert result["markdown"] == markdown
+        assert result["active_release_id"] == "release-1"
+        assert "source_pack_key" not in result
+        assert hydrated == ["US:1:B2"]
+    else:
+        with pytest.raises(ReleaseError):
+            router.get_patent("US:1:B2")
+        assert not hydrated

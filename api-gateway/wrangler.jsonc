@@ -16,6 +16,10 @@
     {
       "pattern": "api.jamienoel.com/patpub/api/search",
       "zone_name": "jamienoel.com"
+    },
+    {
+      "pattern": "api.jamienoel.com/patpub/api/publications/*",
+      "zone_name": "jamienoel.com"
     }
   ],
   "observability": {

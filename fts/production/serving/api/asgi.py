@@ -19,7 +19,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.concurrency import run_in_threadpool
 
-from .source_router import MAX_REQUEST_BYTES, OPENAPI_SPEC_PATH, Router, SearchQueryError
+from .source_router import MAX_REQUEST_BYTES, OPENAPI_SPEC_PATH, Router, SearchQueryError, PublicationNotFoundError
 from ingestion.release import ReleaseError
 
 
@@ -154,6 +154,24 @@ async def search(request: Request) -> Response:
     return await _search(request)
 
 
+async def get_publication(request: Request) -> Response:
+    if not _bearer_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        result = await run_in_threadpool(
+            _router_or_error().get_patent, request.path_params["publication_uid"]
+        )
+        return JSONResponse(result)
+    except SearchQueryError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except PublicationNotFoundError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=404)
+    except (ReleaseError, ValueError, KeyError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 async def candidate_search(request: Request) -> Response:
     index_id = request.path_params.get("index_id", "")
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,100}", index_id):
@@ -230,6 +248,20 @@ def search_patents(
     }
 
 
+@mcp.tool(
+    name="get_patent",
+    title="Read full patent text",
+    description=(
+        "Fetch a publication's complete canonical Markdown, including abstract, "
+        "description, and claims, from the active release. Pass the publication_uid "
+        "returned by search_patents, for example US:9999999:B2. "
+        "Returns an error if the ID is invalid or absent from the active release."
+    ),
+)
+def get_patent(publication_uid: str) -> dict[str, Any]:
+    return _router_or_error().get_patent(publication_uid)
+
+
 mcp_app = mcp.streamable_http_app()
 
 
@@ -247,6 +279,7 @@ app = Starlette(
         Route("/healthz", healthz, methods=["GET"]),
         Route("/readyz", readyz, methods=["GET"]),
         Route("/api/search", search, methods=["POST"]),
+        Route("/api/publications/{publication_uid}", get_publication, methods=["GET"]),
         Route("/api/v1/{index_id}/search", candidate_search, methods=["POST"]),
         Mount("/patpub", app=mcp_app),
     ],

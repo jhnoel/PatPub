@@ -34,6 +34,10 @@ OPENAPI_SPEC_PATH = Path(__file__).with_name("openapi.json")
 DEFAULT_UPSTREAM_TIMEOUT_SECONDS = 65.0
 
 
+class PublicationNotFoundError(LookupError):
+    """The publication is absent from the active release."""
+
+
 class SearchQueryError(ValueError):
     """A query the caller can correct, rather than an upstream outage."""
 
@@ -295,7 +299,30 @@ class Router:
             raise ReleaseError("canonical source publication identity mismatch")
         return text
 
+    def get_patent(self, publication_uid: str) -> dict[str, Any]:
+        """Read one publication's complete canonical Markdown from the active release."""
+        if not isinstance(publication_uid, str) or not re.fullmatch(
+            r"[A-Z]{2}:[A-Z0-9]+:[A-Z][0-9]?", publication_uid
+        ):
+            raise SearchQueryError("publication_uid must be a canonical ID such as US:9999999:B2")
+        result = self._search(json.dumps({
+            "query": f'publication_uid:"{publication_uid}"', "max_hits": 2,
+        }).encode(), full_text_uid=publication_uid)
+        hits = result.get("hits", [])
+        if not hits:
+            raise PublicationNotFoundError(f"Publication {publication_uid} was not found in the active release")
+        hit = hits[0]
+        return {
+            "publication_uid": publication_uid,
+            "publication_number": hit.get("publication_number"),
+            "markdown": hit["markdown"],
+            "active_release_id": result["active_release_id"],
+        }
+
     def search(self, body: bytes) -> dict[str, Any]:
+        return self._search(body)
+
+    def _search(self, body: bytes, *, full_text_uid: str | None = None) -> dict[str, Any]:
         try:
             query = json.loads(body)
         except json.JSONDecodeError as exc:
@@ -392,6 +419,11 @@ class Router:
             raise ReleaseError("search upstream returned invalid hits")
         if len(hits) > query["max_hits"]:
             raise ReleaseError("search upstream returned more hits than requested")
+        if full_text_uid is not None:
+            if len(hits) > 1 or int(result.get("num_hits", len(hits))) > 1:
+                raise ReleaseError("active release contains multiple matches for the publication")
+            if any(not isinstance(hit, dict) or hit.get("publication_uid") != full_text_uid for hit in hits):
+                raise ReleaseError("point read returned an unexpected publication identity")
         requested_bytes = 0
         for hit in hits:
             if not isinstance(hit, dict):
@@ -405,6 +437,10 @@ class Router:
             if requested_bytes > self.max_hydration_bytes:
                 raise ReleaseError("search response exceeds the hydration budget")
             canonical = self._hydrate(hit, manifest)
+            if full_text_uid is not None:
+                hit["markdown"] = canonical
+                hit["active_release_id"] = manifest.release_id
+                continue
             sections = sections_from_canonical_markdown(canonical)
             hit["snippets"] = (
                 snippets_for_document(original_query, sections)
@@ -451,7 +487,23 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/openapi.json":
+        if self.path.startswith("/api/publications/"):
+            expected_token = os.environ.get("ROUTER_BEARER_TOKEN", "").strip()
+            supplied = self.headers.get("authorization", "")
+            if not expected_token or not hmac.compare_digest(supplied.encode(), f"Bearer {expected_token}".encode()):
+                self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                return
+            from urllib.parse import unquote, urlsplit
+            uid = unquote(urlsplit(self.path).path.removeprefix("/api/publications/"))
+            try:
+                self._json(HTTPStatus.OK, self.router.get_patent(uid))
+            except SearchQueryError as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except PublicationNotFoundError as exc:
+                self._json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            except (ReleaseError, ValueError, KeyError) as exc:
+                self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
+        elif self.path == "/openapi.json":
             expected_token = os.environ.get("ROUTER_BEARER_TOKEN", "").strip()
             supplied = self.headers.get("authorization", "")
             if not expected_token or not hmac.compare_digest(

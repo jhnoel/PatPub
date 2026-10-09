@@ -2,7 +2,8 @@
 
 REST and MCP search the same active release. Results include publication
 metadata, snippets generated from canonical source text, and
-`active_release_id`. MCP omits internal source-pack pointers.
+`active_release_id`. Full-text point reads return complete canonical Markdown
+by `publication_uid`. MCP omits internal source-pack pointers.
 
 ## Endpoints and authentication
 
@@ -12,6 +13,7 @@ gateway.
 | Interface | Direct serving path | Gateway URL | Required header |
 | --- | --- | --- | --- |
 | REST search | `/api/search` | `https://api.jamienoel.com/patpub/api/search` | `Authorization: Bearer <REST token>` |
+| REST full text | `/api/publications/{publication_uid}` | `https://api.jamienoel.com/patpub/api/publications/{publication_uid}` | `Authorization: Bearer <REST token>` |
 | OpenAPI | `/openapi.json` | `https://api.jamienoel.com/patpub/openapi.json` | `Authorization: Bearer <REST token>` |
 | MCP | `/patpub/mcp` | `https://api.jamienoel.com/patpub/mcp` | `X-Functions-Key: <MCP key>` |
 
@@ -37,6 +39,24 @@ curl --fail-with-body "$PATPUB_URL/api/search" \
 The [OpenAPI definition](../fts/production/serving/api/openapi.json) describes
 the request and response schemas. `max_hits` defaults to 10 and is capped at
 100. `start_offset` defaults to 0 and accepts values from 0 through 900.
+
+## Full-text point reads
+
+Use the `publication_uid` from a search hit to read a publication:
+
+```sh
+curl --fail-with-body "$PATPUB_URL/api/publications/US:9999999:B2" \
+  -H "Authorization: Bearer $ROUTER_BEARER_TOKEN"
+```
+
+The response contains `publication_uid`, `publication_number`, `markdown`, and
+`active_release_id`. `markdown` is the complete canonical publication text.
+Reads use the active release and its correction selection, so a publication
+absent from that release returns HTTP 404. Invalid IDs return HTTP 400.
+Source integrity or upstream failures return HTTP 502.
+
+MCP exposes the same operation as `get_patent(publication_uid="US:9999999:B2")`.
+Invalid or missing publications produce MCP tool errors.
 
 ## Query fields
 
@@ -87,7 +107,7 @@ comma-separated Terraform variable `patpub_mcp_allowed_origins`. Requests
 without an Origin header are allowed.
 
 If Cloudflare Browser Integrity Check blocks machine clients, scope a Skip
-rule to `/patpub/mcp`, `/patpub/openapi.json`, and `/patpub/api/search` on the
+rule to `/patpub/mcp`, `/patpub/openapi.json`, `/patpub/api/search`, and `/patpub/api/publications/*` on the
 gateway host and skip only Browser Integrity Check (`bic`). The rule name for
 the documented `api.jamienoel.com` configuration is `patpub_skip_bic`. Origin
 authentication and other security controls still apply. Use the

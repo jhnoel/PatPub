@@ -60,3 +60,22 @@ def test_rest_search_does_not_block_health_checks(monkeypatch):
         assert result.status_code == 200
 
     asyncio.run(check())
+
+
+@pytest.mark.parametrize("error,status", [(None, 200), (SearchQueryError("bad ID"), 400), (asgi.PublicationNotFoundError("missing"), 404), (asgi.ReleaseError("corrupt source"), 502)])
+def test_rest_point_read_status_and_mcp_operation(monkeypatch, error, status):
+    def get_patent(uid):
+        assert uid == "US:1:B2"
+        if error:
+            raise error
+        return {"publication_uid": uid, "markdown": "Full text", "active_release_id": "r1"}
+    monkeypatch.setenv("ROUTER_BEARER_TOKEN", "test")
+    monkeypatch.setattr(asgi, "_router", SimpleNamespace(get_patent=get_patent))
+    req = request()
+    req.path_params = {"publication_uid": "US:1:B2"}
+    result = asyncio.run(asgi.get_publication(req))
+    assert result.status_code == status
+    if error is None:
+        assert asgi.get_patent("US:1:B2")["markdown"] == "Full text"
+    req.headers["authorization"] = "Bearer wrong"
+    assert asyncio.run(asgi.get_publication(req)).status_code == 401

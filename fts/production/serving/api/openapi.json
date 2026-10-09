@@ -88,6 +88,82 @@
           }
         }
       }
+    },
+    "/api/publications/{publication_uid}": {
+      "get": {
+        "operationId": "getPatent",
+        "summary": "Read complete patent text",
+        "description": "Read complete canonical Markdown from the active release using the publication_uid returned by search.",
+        "security": [
+          {
+            "RouterBearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "publication_uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Z]{2}:[A-Z0-9]+:[A-Z][0-9]?$"
+            },
+            "example": "US:9999999:B2"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complete publication text.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid publication ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Publication absent from the active release.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Release or source retrieval failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -183,6 +259,30 @@
           }
         },
         "additionalProperties": true
+      },
+      "PublicationResponse": {
+        "type": "object",
+        "required": [
+          "publication_uid",
+          "markdown",
+          "active_release_id"
+        ],
+        "properties": {
+          "publication_uid": {
+            "type": "string"
+          },
+          "publication_number": {
+            "type": "string",
+            "nullable": true
+          },
+          "markdown": {
+            "type": "string",
+            "description": "Complete canonical publication Markdown."
+          },
+          "active_release_id": {
+            "type": "string"
+          }
+        }
       }
     }
   }

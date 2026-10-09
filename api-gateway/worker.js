@@ -14,19 +14,20 @@ export default {
     const url = new URL(request.url);
     const isSpec = url.pathname === "/patpub/openapi.json";
     const isSearch = url.pathname === "/patpub/api/search";
-    if (url.pathname !== MCP_PATH && !isSpec && !isSearch) {
+    const isPublication = /^\/patpub\/api\/publications\/[^/]+$/.test(url.pathname);
+    if (url.pathname !== MCP_PATH && !isSpec && !isSearch && !isPublication) {
       return Response.json({ error: "not_found" }, { status: 404 });
     }
-    const cors = (isSpec || isSearch) ? {
+    const cors = (isSpec || isSearch || isPublication) ? {
       "access-control-allow-origin": "*",
-      "access-control-allow-methods": isSpec ? "GET, OPTIONS" : "POST, OPTIONS",
+      "access-control-allow-methods": (isSpec || isPublication) ? "GET, OPTIONS" : "POST, OPTIONS",
       "access-control-allow-headers": "authorization, content-type, accept",
       "access-control-max-age": "600",
     } : {};
-    if ((isSpec || isSearch) && request.method === "OPTIONS") {
+    if ((isSpec || isSearch || isPublication) && request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: cors });
     }
-    const methods = isSpec ? new Set(["GET"]) : isSearch ? new Set(["POST"]) : MCP_METHODS;
+    const methods = (isSpec || isPublication) ? new Set(["GET"]) : isSearch ? new Set(["POST"]) : MCP_METHODS;
     if (!methods.has(request.method)) {
       return new Response(null, { status: 405, headers: { ...cors, allow: [...methods].join(", ") } });
     }
