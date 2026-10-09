@@ -13,6 +13,7 @@ gateway.
 | Interface | Direct serving path | Gateway URL | Required header |
 | --- | --- | --- | --- |
 | REST search | `/api/search` | `https://api.jamienoel.com/patpub/api/search` | `Authorization: Bearer <REST token>` |
+| REST batch full text | `/api/publications` (POST) | `https://api.jamienoel.com/patpub/api/publications` | `Authorization: Bearer <REST token>` |
 | REST full text | `/api/publications/{publication_uid}` | `https://api.jamienoel.com/patpub/api/publications/{publication_uid}` | `Authorization: Bearer <REST token>` |
 | OpenAPI | `/openapi.json` | `https://api.jamienoel.com/patpub/openapi.json` | `Authorization: Bearer <REST token>` |
 | MCP | `/patpub/mcp` | `https://api.jamienoel.com/patpub/mcp` | `X-Functions-Key: <MCP key>` |
@@ -57,6 +58,50 @@ Source integrity or upstream failures return HTTP 502.
 
 MCP exposes the same operation as `get_patent(publication_uid="US:9999999:B2")`.
 Invalid or missing publications produce MCP tool errors.
+
+For multiple publications, submit a list of 1 to 100 canonical IDs:
+
+```sh
+curl --fail-with-body "$PATPUB_URL/api/publications" \
+  -H "Authorization: Bearer $ROUTER_BEARER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"publication_uids":["US:9999999:B2","US:10000000:B2"]}'
+```
+
+MCP accepts `get_patents(publication_uids=["US:9999999:B2", "US:10000000:B2"])`
+or `get_patent(publication_uid=["US:9999999:B2", "US:10000000:B2"])`.
+Batch responses contain `documents`, `missing_publication_uids`, and
+`active_release_id`. Documents follow input order with duplicate IDs removed.
+Missing publications are reported in the list, including when all IDs are
+missing; a valid batch returns HTTP 200. Invalid input returns HTTP 400.
+All documents use one selected release and share the configured hydration byte
+budget; budget, integrity, or retrieval failures fail the entire request.
+
+### Response format
+
+Single reads return a publication object. Batch reads return this envelope:
+
+```json
+{
+  "documents": [
+    {
+      "publication_uid": "US:9999999:B2",
+      "publication_number": "US9999999B2",
+      "markdown": "<!-- publication_uid: US:9999999:B2 -->\n# Patent title\n\n## Abstract\nComplete abstract.\n\n## Description\nComplete description.\n\n## Claims\nComplete claims.\n",
+      "active_release_id": "release-example"
+    }
+  ],
+  "missing_publication_uids": [
+    "US:10000000:B2"
+  ],
+  "active_release_id": "release-example"
+}
+```
+
+`markdown` contains the entire canonical document, without snippet truncation.
+`publication_number` can be `null`. Every document and the batch envelope carry
+the same `active_release_id`. An all-missing batch returns an empty `documents`
+array and lists every requested ID in `missing_publication_uids`.
 
 ## Query fields
 
@@ -107,7 +152,7 @@ comma-separated Terraform variable `patpub_mcp_allowed_origins`. Requests
 without an Origin header are allowed.
 
 If Cloudflare Browser Integrity Check blocks machine clients, scope a Skip
-rule to `/patpub/mcp`, `/patpub/openapi.json`, `/patpub/api/search`, and `/patpub/api/publications/*` on the
+rule to `/patpub/mcp`, `/patpub/openapi.json`, `/patpub/api/search`, and `/patpub/api/publications*` on the
 gateway host and skip only Browser Integrity Check (`bic`). The rule name for
 the documented `api.jamienoel.com` configuration is `patpub_skip_bic`. Origin
 authentication and other security controls still apply. Use the

@@ -79,3 +79,23 @@ def test_rest_point_read_status_and_mcp_operation(monkeypatch, error, status):
         assert asgi.get_patent("US:1:B2")["markdown"] == "Full text"
     req.headers["authorization"] = "Bearer wrong"
     assert asyncio.run(asgi.get_publication(req)).status_code == 401
+
+
+@pytest.mark.parametrize("body,status", [(b'{"publication_uids":["US:1:B2","US:2:B2"]}', 200), (b'[]', 400), (b'{', 400), (b'{"other":[]}', 400)])
+def test_rest_batch_input_and_mcp(monkeypatch, body, status):
+    calls = []
+    def get_patents(uids):
+        calls.append(uids)
+        return {"documents": [{"publication_uid": uid, "markdown": "complete text", "active_release_id": "r1"} for uid in uids], "missing_publication_uids": [], "active_release_id": "r1"}
+    monkeypatch.setenv("ROUTER_BEARER_TOKEN", "test")
+    monkeypatch.setattr(asgi, "_router", SimpleNamespace(get_patents=get_patents, get_patent=get_patents))
+    req = request(body)
+    result = asyncio.run(asgi.get_publications(req))
+    assert result.status_code == status
+    if status == 200:
+        assert len(asgi.get_patents(["US:1:B2", "US:2:B2"])["documents"]) == 2
+        assert len(asgi.get_patent(["US:1:B2", "US:2:B2"])["documents"]) == 2
+    else:
+        assert calls == []
+    req.headers["authorization"] = "Bearer wrong"
+    assert asyncio.run(asgi.get_publications(req)).status_code == 401

@@ -299,30 +299,43 @@ class Router:
             raise ReleaseError("canonical source publication identity mismatch")
         return text
 
-    def get_patent(self, publication_uid: str) -> dict[str, Any]:
-        """Read one publication's complete canonical Markdown from the active release."""
-        if not isinstance(publication_uid, str) or not re.fullmatch(
-            r"[A-Z]{2}:[A-Z0-9]+:[A-Z][0-9]?", publication_uid
-        ):
-            raise SearchQueryError("publication_uid must be a canonical ID such as US:9999999:B2")
-        result = self._search(json.dumps({
-            "query": f'publication_uid:"{publication_uid}"', "max_hits": 2,
-        }).encode(), full_text_uid=publication_uid)
-        hits = result.get("hits", [])
-        if not hits:
+    def get_patent(self, publication_uid: str | list[str]) -> dict[str, Any]:
+        """Read a single publication, or a batch when passed a list."""
+        if isinstance(publication_uid, list):
+            return self.get_patents(publication_uid)
+        result = self.get_patents([publication_uid])
+        if result["missing_publication_uids"]:
             raise PublicationNotFoundError(f"Publication {publication_uid} was not found in the active release")
-        hit = hits[0]
+        return result["documents"][0]
+
+    def get_patents(self, publication_uids: list[str]) -> dict[str, Any]:
+        """Read up to 100 publications together from one active release."""
+        if not isinstance(publication_uids, list) or not 1 <= len(publication_uids) <= MAX_HITS:
+            raise SearchQueryError("publication_uids must be a list of 1 to 100 canonical IDs")
+        for uid in publication_uids:
+            if not isinstance(uid, str) or not re.fullmatch(r"[A-Z]{2}:[A-Z0-9]+:[A-Z][0-9]?", uid):
+                raise SearchQueryError("publication_uid must be a canonical ID such as US:9999999:B2")
+        uids = list(dict.fromkeys(publication_uids))
+        result = self._search(json.dumps({
+            "query": " OR ".join(f'publication_uid:"{uid}"' for uid in uids),
+            "max_hits": min(len(uids) + 1, MAX_HITS),
+        }).encode(), full_text_uids=set(uids))
+        hits = {hit["publication_uid"]: hit for hit in result.get("hits", [])}
         return {
-            "publication_uid": publication_uid,
-            "publication_number": hit.get("publication_number"),
-            "markdown": hit["markdown"],
+            "documents": [{
+                "publication_uid": uid,
+                "publication_number": hits[uid].get("publication_number"),
+                "markdown": hits[uid]["markdown"],
+                "active_release_id": result["active_release_id"],
+            } for uid in uids if uid in hits],
+            "missing_publication_uids": [uid for uid in uids if uid not in hits],
             "active_release_id": result["active_release_id"],
         }
 
     def search(self, body: bytes) -> dict[str, Any]:
         return self._search(body)
 
-    def _search(self, body: bytes, *, full_text_uid: str | None = None) -> dict[str, Any]:
+    def _search(self, body: bytes, *, full_text_uids: set[str] | None = None) -> dict[str, Any]:
         try:
             query = json.loads(body)
         except json.JSONDecodeError as exc:
@@ -419,11 +432,12 @@ class Router:
             raise ReleaseError("search upstream returned invalid hits")
         if len(hits) > query["max_hits"]:
             raise ReleaseError("search upstream returned more hits than requested")
-        if full_text_uid is not None:
-            if len(hits) > 1 or int(result.get("num_hits", len(hits))) > 1:
-                raise ReleaseError("active release contains multiple matches for the publication")
-            if any(not isinstance(hit, dict) or hit.get("publication_uid") != full_text_uid for hit in hits):
+        if full_text_uids is not None:
+            if any(not isinstance(hit, dict) or hit.get("publication_uid") not in full_text_uids for hit in hits):
                 raise ReleaseError("point read returned an unexpected publication identity")
+            returned_uids = [hit["publication_uid"] for hit in hits]
+            if len(set(returned_uids)) != len(returned_uids) or int(result.get("num_hits", len(hits))) != len(hits):
+                raise ReleaseError("active release contains multiple or incomplete matches for the publications")
         requested_bytes = 0
         for hit in hits:
             if not isinstance(hit, dict):
@@ -437,7 +451,7 @@ class Router:
             if requested_bytes > self.max_hydration_bytes:
                 raise ReleaseError("search response exceeds the hydration budget")
             canonical = self._hydrate(hit, manifest)
-            if full_text_uid is not None:
+            if full_text_uids is not None:
                 hit["markdown"] = canonical
                 hit["active_release_id"] = manifest.release_id
                 continue
@@ -535,7 +549,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         candidate = re.fullmatch(r"/api/v1/([a-z0-9][a-z0-9_-]{2,100})/search", self.path)
-        if self.path != "/api/search" and candidate is None:
+        if self.path not in ("/api/search", "/api/publications") and candidate is None:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
         expected_token = os.environ.get("ROUTER_BEARER_TOKEN", "").strip()
@@ -555,10 +569,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             body = self.rfile.read(length)
-            result = (
-                self.router.candidate_search(candidate.group(1), body)
-                if candidate else self.router.search(body)
-            )
+            if self.path == "/api/publications":
+                try:
+                    payload = json.loads(body)
+                except (ValueError, UnicodeDecodeError) as exc:
+                    raise SearchQueryError("request body must be a JSON object with publication_uids") from exc
+                if not isinstance(payload, dict) or set(payload) != {"publication_uids"}:
+                    raise SearchQueryError("request body must contain only publication_uids")
+                result = self.router.get_patents(payload["publication_uids"])
+            else:
+                result = (
+                    self.router.candidate_search(candidate.group(1), body)
+                    if candidate else self.router.search(body)
+                )
             self._json(HTTPStatus.OK, result)
         except SearchQueryError as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})

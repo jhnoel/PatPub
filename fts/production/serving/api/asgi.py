@@ -172,6 +172,29 @@ async def get_publication(request: Request) -> Response:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
+async def get_publications(request: Request) -> Response:
+    if not _bearer_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    body = await _request_body(request)
+    if isinstance(body, Response):
+        return body
+    try:
+        try:
+            payload = json.loads(body)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise SearchQueryError("request body must be a JSON object with publication_uids") from exc
+        if not isinstance(payload, dict) or set(payload) != {"publication_uids"}:
+            raise SearchQueryError("request body must contain only publication_uids")
+        result = await run_in_threadpool(_router_or_error().get_patents, payload["publication_uids"])
+        return JSONResponse(result)
+    except SearchQueryError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except (ReleaseError, ValueError, KeyError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 async def candidate_search(request: Request) -> Response:
     index_id = request.path_params.get("index_id", "")
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,100}", index_id):
@@ -204,7 +227,9 @@ mcp = FastMCP(
         "publication_number, applicant, and assignee."
         " The inventor field is not indexed. Applicant names can include inventor "
         "names in some records, but do not provide complete inventor coverage. "
-        "For broad phrase queries, target title, abstract, or claims to reduce latency."
+        "For broad phrase queries, target title, abstract, or claims to reduce latency. "
+        "Use get_patent for one publication_uid or get_patents for a list of IDs "
+        "to retrieve complete canonical Markdown."
     ),
     stateless_http=True,
     json_response=True,
@@ -255,11 +280,21 @@ def search_patents(
         "Fetch a publication's complete canonical Markdown, including abstract, "
         "description, and claims, from the active release. Pass the publication_uid "
         "returned by search_patents, for example US:9999999:B2. "
-        "Returns an error if the ID is invalid or absent from the active release."
+        "Also accepts a list of up to 100 IDs, returning documents and missing_publication_uids. "
+        "Returns an error if an ID is invalid or a single ID is absent from the active release."
     ),
 )
-def get_patent(publication_uid: str) -> dict[str, Any]:
+def get_patent(publication_uid: str | list[str]) -> dict[str, Any]:
     return _router_or_error().get_patent(publication_uid)
+
+
+@mcp.tool(
+    name="get_patents",
+    title="Read multiple full patent texts",
+    description="Fetch complete canonical Markdown for 1 to 100 publication_uids from one active release. Returns documents in input order (duplicates removed), missing_publication_uids, and active_release_id.",
+)
+def get_patents(publication_uids: list[str]) -> dict[str, Any]:
+    return _router_or_error().get_patents(publication_uids)
 
 
 mcp_app = mcp.streamable_http_app()
@@ -279,6 +314,7 @@ app = Starlette(
         Route("/healthz", healthz, methods=["GET"]),
         Route("/readyz", readyz, methods=["GET"]),
         Route("/api/search", search, methods=["POST"]),
+        Route("/api/publications", get_publications, methods=["POST"]),
         Route("/api/publications/{publication_uid}", get_publication, methods=["GET"]),
         Route("/api/v1/{index_id}/search", candidate_search, methods=["POST"]),
         Mount("/patpub", app=mcp_app),

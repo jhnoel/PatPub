@@ -26,6 +26,25 @@ Publication validates the complete artifact graph. Serving checks the selected
 manifest and requested frames; it does not rehash every index split or source
 pack on each search.
 
+## Full-text read contract
+
+`GET /api/publications/{publication_uid}` returns one complete canonical
+publication as `publication_uid`, nullable `publication_number`, `markdown`,
+and `active_release_id`. An absent publication returns HTTP 404.
+
+`POST /api/publications` accepts `{"publication_uids": ["US:9999999:B2"]}`
+with 1 to 100 IDs. It searches the IDs together against one selected release,
+uses the same source-frame integrity checks as search, and returns `documents`,
+`missing_publication_uids`, and `active_release_id`. Documents follow input
+order with duplicates removed. Missing IDs are reported separately, including
+when every requested publication is absent. Invalid input returns HTTP 400;
+upstream, integrity, and shared hydration budget failures return HTTP 502.
+
+MCP exposes `get_patents(publication_uids: list[str])` and
+`get_patent(publication_uid: str | list[str])` with the same response objects.
+A missing single ID produces a tool error. Batch reads return missing IDs in
+the envelope. Both tools omit internal source pointers.
+
 ## Limits
 
 | Limit | Value |
@@ -43,10 +62,10 @@ specifies the pointer and fingerprint formats.
 
 ## Interfaces
 
-REST search and `GET /openapi.json` require
+REST search, full-text reads, and `GET /openapi.json` require
 `Authorization: Bearer <ROUTER_BEARER_TOKEN>`. The
 [OpenAPI definition](../serving/api/openapi.json) describes the public search
-operation. MCP uses a separate key and removes internal pointer fields from
+and full-text read operations. MCP uses a separate key and removes internal pointer fields from
 its results; see [client access](../../../docs/mcp.md).
 
 The authenticated candidate-index route is used for pre-publication canaries

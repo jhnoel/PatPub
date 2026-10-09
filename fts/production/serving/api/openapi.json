@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "PatPub Search API",
-    "version": "1.0.0",
-    "description": "Search PatPub's published patent corpus. Results are hydrated from the active release and include publication metadata and text snippets. Query syntax supports the indexed fields title, abstract, claims, description, publication_number, publication_uid, patent_number, application_number, doc_kind, applicant, assignee, ipc, and us_class."
+    "version": "1.1.0",
+    "description": "Search PatPub's published patent corpus. Results are hydrated from the active release and include publication metadata and text snippets. Query syntax supports the indexed fields title, abstract, claims, description, publication_number, publication_uid, patent_number, application_number, doc_kind, applicant, assignee, ipc, and us_class. Read complete canonical publication Markdown by one publication_uid or a list of up to 100 IDs."
   },
   "paths": {
     "/api/search": {
@@ -105,8 +105,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string",
-              "pattern": "^[A-Z]{2}:[A-Z0-9]+:[A-Z][0-9]?$"
+              "$ref": "#/components/schemas/PublicationUid"
             },
             "example": "US:9999999:B2"
           }
@@ -118,6 +117,12 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PublicationResponse"
+                },
+                "example": {
+                  "publication_uid": "US:9999999:B2",
+                  "publication_number": "US9999999B2",
+                  "markdown": "<!-- publication_uid: US:9999999:B2 -->\n# Patent title\n\n## Abstract\nComplete abstract.\n\n## Description\nComplete description.\n\n## Claims\nComplete claims.\n",
+                  "active_release_id": "release-example"
                 }
               }
             }
@@ -154,6 +159,100 @@
           },
           "502": {
             "description": "Release or source retrieval failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/publications": {
+      "post": {
+        "operationId": "getPatents",
+        "summary": "Read multiple complete patent texts",
+        "description": "Read 1 to 100 canonical publication IDs from one active release. Documents follow input order, duplicate IDs are removed, and missing IDs are reported separately. The shared hydration byte budget applies.",
+        "security": [
+          {
+            "RouterBearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicationsRequest"
+              },
+              "example": {
+                "publication_uids": [
+                  "US:9999999:B2",
+                  "US:10000000:B2"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Complete documents and missing IDs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationsResponse"
+                },
+                "example": {
+                  "documents": [
+                    {
+                      "publication_uid": "US:9999999:B2",
+                      "publication_number": "US9999999B2",
+                      "markdown": "<!-- publication_uid: US:9999999:B2 -->\n# Patent title\n\n## Abstract\nComplete abstract.\n\n## Description\nComplete description.\n\n## Claims\nComplete claims.\n",
+                      "active_release_id": "release-example"
+                    }
+                  ],
+                  "missing_publication_uids": [
+                    "US:10000000:B2"
+                  ],
+                  "active_release_id": "release-example"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid JSON or IDs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request exceeds size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Source retrieval, integrity check, or hydration budget failure.",
             "content": {
               "application/json": {
                 "schema": {
@@ -264,16 +363,18 @@
         "type": "object",
         "required": [
           "publication_uid",
+          "publication_number",
           "markdown",
           "active_release_id"
         ],
         "properties": {
           "publication_uid": {
-            "type": "string"
+            "$ref": "#/components/schemas/PublicationUid"
           },
           "publication_number": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "Stored publication number, or null if unavailable."
           },
           "markdown": {
             "type": "string",
@@ -281,6 +382,59 @@
           },
           "active_release_id": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PublicationsResponse": {
+        "type": "object",
+        "required": [
+          "documents",
+          "missing_publication_uids",
+          "active_release_id"
+        ],
+        "properties": {
+          "documents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicationResponse"
+            },
+            "description": "Complete publications in first occurrence input order; duplicate identifiers are removed."
+          },
+          "missing_publication_uids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicationUid"
+            },
+            "description": "Requested identifiers absent from the selected active release, in input order."
+          },
+          "active_release_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PublicationUid": {
+        "type": "string",
+        "pattern": "^[A-Z]{2}:[A-Z0-9]+:[A-Z][0-9]?$",
+        "example": "US:9999999:B2",
+        "description": "Canonical publication identifier returned by search."
+      },
+      "PublicationsRequest": {
+        "type": "object",
+        "required": [
+          "publication_uids"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "publication_uids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/PublicationUid"
+            },
+            "description": "One to 100 canonical publication IDs; duplicates count toward the limit and are read once."
           }
         }
       }

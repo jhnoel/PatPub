@@ -13,7 +13,7 @@ export default {
   async fetch(request) {
     const url = new URL(request.url);
     const isSpec = url.pathname === "/patpub/openapi.json";
-    const isSearch = url.pathname === "/patpub/api/search";
+    const isSearch = url.pathname === "/patpub/api/search" || url.pathname === "/patpub/api/publications";
     const isPublication = /^\/patpub\/api\/publications\/[^/]+$/.test(url.pathname);
     if (url.pathname !== MCP_PATH && !isSpec && !isSearch && !isPublication) {
       return Response.json({ error: "not_found" }, { status: 404 });

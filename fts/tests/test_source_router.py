@@ -434,3 +434,45 @@ def test_point_read_returns_complete_text_and_checks_identity(monkeypatch, retur
         with pytest.raises(ReleaseError):
             router.get_patent("US:1:B2")
         assert not hydrated
+
+
+@pytest.mark.parametrize("uids", [[], ["US:1:B2"] * 101, "US:1:B2", ["US:1:B2", None]])
+def test_batch_rejects_invalid_list_before_release_access(uids):
+    router = Router.__new__(Router)
+    router._active = lambda: pytest.fail("invalid batch accessed release")
+    with pytest.raises(source_router.SearchQueryError):
+        router.get_patents(uids)
+
+
+def test_batch_order_missing_ids_deduplication_and_shared_budget(monkeypatch):
+    router = Router.__new__(Router)
+    router.search_url = "http://quickwit"
+    router.timeout = 65
+    router.max_hydration_bytes = 20
+    manifest = SimpleNamespace(release_id="r1", fulltext={"index_id": "patents-r"}, source_generations=["sha256:" + "a" * 64], source={})
+    releases = []
+    def active():
+        releases.append(1)
+        return {"manifest_sha256": "b" * 64}, manifest, "c" * 64
+    router._active = active
+    router._hydrate = lambda hit, selected: "full " + hit["publication_uid"]
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            pass
+        def read(self):
+            return json.dumps({"hits": [{"publication_uid": uid, "length": 5, "uncompressed_length": 5} for uid in ["US:2:B2", "US:1:B2"]], "num_hits": 2}).encode()
+    def urlopen(req, **kwargs):
+        query = json.loads(req.data)
+        assert query["query"].count('publication_uid:"US:1:B2"') == 1
+        return Response()
+    monkeypatch.setattr(source_router.urlrequest, "urlopen", urlopen)
+    result = router.get_patent(["US:1:B2", "US:3:B2", "US:2:B2", "US:1:B2"])
+    assert releases == [1]
+    assert [doc["publication_uid"] for doc in result["documents"]] == ["US:1:B2", "US:2:B2"]
+    assert [doc["markdown"] for doc in result["documents"]] == ["full US:1:B2", "full US:2:B2"]
+    assert result["missing_publication_uids"] == ["US:3:B2"]
+    router.max_hydration_bytes = 19
+    with pytest.raises(ReleaseError, match="hydration budget"):
+        router.get_patents(["US:1:B2", "US:2:B2"])

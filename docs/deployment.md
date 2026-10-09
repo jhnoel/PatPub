@@ -80,6 +80,7 @@ The launcher prints the serving URL. Retrieve `router_bearer_token` and
 | Endpoint | Authentication |
 | --- | --- |
 | `POST <serving-url>/api/search` | `Authorization: Bearer <router_bearer_token>` |
+| `POST <serving-url>/api/publications` | `Authorization: Bearer <router_bearer_token>` |
 | `GET <serving-url>/api/publications/{publication_uid}` | `Authorization: Bearer <router_bearer_token>` |
 | `GET <serving-url>/openapi.json` | `Authorization: Bearer <router_bearer_token>` |
 | `<serving-url>/patpub/mcp` | `X-Functions-Key: <patpub_mcp_key>` |
