@@ -3,25 +3,18 @@
   "name": "patpub-api-gateway",
   "main": "worker.js",
   "compatibility_date": "2026-10-02",
-  "workers_dev": false,
-  "routes": [
-    {
-      "pattern": "api.jamienoel.com/patpub/mcp",
-      "zone_name": "jamienoel.com"
-    },
-    {
-      "pattern": "api.jamienoel.com/patpub/openapi.json",
-      "zone_name": "jamienoel.com"
-    },
-    {
-      "pattern": "api.jamienoel.com/patpub/api/search",
-      "zone_name": "jamienoel.com"
-    },
-    {
-      "pattern": "api.jamienoel.com/patpub/api/publications*",
-      "zone_name": "jamienoel.com"
-    }
-  ],
+  "workers_dev": true,
+  "vars": {
+    // Set this to the HTTPS origin of your serving Container App.
+    "UPSTREAM_URL": ""
+  },
+  // To use a custom hostname, replace these example values and uncomment:
+  // "routes": [
+  //   {
+  //     "pattern": "api.example.com/patpub/*",
+  //     "zone_name": "example.com"
+  //   }
+  // ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

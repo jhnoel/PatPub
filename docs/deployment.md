@@ -156,6 +156,23 @@ lockfiles. Push the images to your registry and set `ingestion_image` and
 ## Optional gateway
 
 The serving app exposes authenticated REST and MCP endpoints directly.
-[api-gateway/worker.js](../api-gateway/worker.js) provides a Cloudflare gateway
-for a custom domain. Set its upstream, routes, and OpenAPI server URL for your
-deployment; the checked-in values refer to `api.jamienoel.com`.
+[api-gateway/worker.js](../api-gateway/worker.js) provides an optional Cloudflare
+gateway. Its checked-in configuration is generic and deploys to your account's
+`workers.dev` address by default; it does not claim a custom domain.
+
+Before deploying, set `vars.UPSTREAM_URL` in
+[`api-gateway/wrangler.jsonc`](../api-gateway/wrangler.jsonc) to the HTTPS origin
+of your serving Container App, such as `https://<your-container-app-fqdn>`.
+Use only the origin, with no path. The Worker reports a configuration error
+until this value is set. The OpenAPI document derives its public server URL from
+the hostname receiving the request, so it needs no separate setting.
+
+To use a custom hostname, uncomment the example `routes` block in
+`wrangler.jsonc` and replace `api.example.com` with your hostname and
+`example.com` with its Cloudflare zone. The deploying Cloudflare account must
+have access to that zone. Keep `workers_dev` enabled to retain both addresses,
+or set it to `false` to serve only the custom route.
+
+From `api-gateway/`, install the locked dependencies with `npm ci`, then deploy
+with `npm run deploy` using a Cloudflare account authorized for the selected
+route.

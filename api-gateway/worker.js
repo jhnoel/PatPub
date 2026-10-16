@@ -1,4 +1,3 @@
-const UPSTREAM = "https://patpub-searcher.mangowave-a2671481.eastus2.azurecontainerapps.io";
 const MCP_PATH = "/patpub/mcp";
 const MCP_METHODS = new Set(["GET", "POST", "DELETE"]);
 const MCP_HEADERS = [
@@ -10,7 +9,7 @@ const MCP_HEADERS = [
 ];
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     const isSpec = url.pathname === "/patpub/openapi.json";
     const isSearch = url.pathname === "/patpub/api/search" || url.pathname === "/patpub/api/publications";
@@ -32,6 +31,25 @@ export default {
       return new Response(null, { status: 405, headers: { ...cors, allow: [...methods].join(", ") } });
     }
 
+    let upstreamOrigin;
+    try {
+      const configuredUpstream = new URL(env.UPSTREAM_URL);
+      if (
+        !["http:", "https:"].includes(configuredUpstream.protocol) ||
+        configuredUpstream.pathname !== "/" ||
+        configuredUpstream.search ||
+        configuredUpstream.hash
+      ) {
+        throw new TypeError("UPSTREAM_URL must be an origin");
+      }
+      upstreamOrigin = configuredUpstream.origin;
+    } catch {
+      return Response.json({
+        error: "gateway_not_configured",
+        message: "Set UPSTREAM_URL to your serving app's HTTP or HTTPS origin.",
+      }, { status: 500, headers: cors });
+    }
+
     const headers = new Headers();
     for (const name of [...MCP_HEADERS, "authorization"]) {
       const value = request.headers.get(name);
@@ -39,7 +57,7 @@ export default {
     }
 
     const path = url.pathname === MCP_PATH ? MCP_PATH : url.pathname.slice("/patpub".length);
-    const upstream = new URL(path + url.search, UPSTREAM);
+    const upstream = new URL(path + url.search, upstreamOrigin);
     const options = { method: request.method, headers, redirect: "manual" };
     if (request.method === "POST") {
       options.body = request.body;
@@ -51,7 +69,7 @@ export default {
     });
     if (isSpec && response.ok) {
       const spec = await response.json();
-      spec.servers = [{ url: "https://api.jamienoel.com/patpub" }];
+      spec.servers = [{ url: `${url.origin}/patpub` }];
       return Response.json(spec, { headers: { ...cors, "cache-control": "no-store" } });
     }
     const responseHeaders = new Headers(response.headers);
